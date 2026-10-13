@@ -59,8 +59,8 @@ pages. No audio stack, no snapd, no systemd, no desktop search indexer.
 | Measured in CI | |
 | --- | --- |
 | Image size | ~1.1 GB |
-| Memory, idle (booted, nobody connected) | ~41 MB |
-| Memory, desktop session + terminal + file manager + editor + Firefox | ~540 MB |
+| Memory, idle (booted, nobody connected) | ~40 MB |
+| Memory, desktop session + terminal + file manager + editor + Firefox | ~550 MB |
 
 Those numbers come from the test suite, which fails the build if the idle
 footprint goes over 512 MB or the busy one over 1.5 GB. A 1 GB Railway
@@ -73,6 +73,13 @@ tabs.
 
 You need a Railway account with an active plan (Railway's free trial works;
 see [limits](#railway-limits-and-the-manual-steps-you-cannot-avoid)).
+
+> **Which branch does Railway build?** Railway deploys one branch of the
+> connected repository - `main` by default, both in the dashboard and in
+> [`.railway/railway.ts`](.railway/railway.ts). If this code is sitting on a
+> feature branch, either merge it into `main` first, or pick that branch in
+> *Service → Settings → Source → Branch*, or run the setup script with
+> `CLOUD_PC_BRANCH=<your-branch> ./scripts/railway-setup.sh`.
 
 ### Option A - one command (recommended, creates everything)
 
