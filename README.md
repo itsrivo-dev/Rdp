@@ -54,11 +54,18 @@ Android RDP app  ──TLS/RDP──▶  Railway TCP proxy  ──▶  xrdp (338
 | Admin tools | `cloudpc-status`, `cloudpc-health`, `cloudpc-credentials` |
 
 Everything is installed with `--no-install-recommends` and without docs/man
-pages. No audio stack, no snapd, no systemd, no desktop search indexer. The
-image is about **1.1 GB**; the measured idle footprint (container booted, no
-one connected) and the footprint with a live desktop session are printed by
-the test suite on every CI run - see
-[what has been verified](#what-has-been-verified).
+pages. No audio stack, no snapd, no systemd, no desktop search indexer.
+
+| Measured in CI | |
+| --- | --- |
+| Image size | ~1.1 GB |
+| Memory, idle (booted, nobody connected) | ~41 MB |
+| Memory, desktop session + terminal + file manager + editor + Firefox | ~540 MB |
+
+Those numbers come from the test suite, which fails the build if the idle
+footprint goes over 512 MB or the busy one over 1.5 GB. A 1 GB Railway
+instance is enough for everyday use; 2 GB is comfortable with several browser
+tabs.
 
 ---
 
@@ -434,19 +441,36 @@ report to an issue titled *CI test reports*.
 
 ## What has been verified
 
-Built and tested in CI on every push (GitHub Actions, Ubuntu runner, real
-Docker): image build, XFCE startup, xrdp startup, a real RDP login creating a
-desktop session, file manager and terminal windows, the full toolchain,
-ports, health checks, logs, graceful shutdown, volume persistence and the
-ephemeral-storage warning. The report for each run is posted to the *CI test
-reports* issue in this repository.
+Every push builds the image on GitHub Actions and runs the full suite against
+real containers - **78 checks, no mocks, no stubs**
+([latest report](https://github.com/itsrivo-dev/Rdp/issues/2)):
 
-**Not verified by the author:** an actual Railway deployment and an actual
-connection from an Android handset - that needs a Railway account and a phone,
-neither of which the CI environment has. Everything Railway-specific in this
-repository (TCP proxy wiring, volume mount path, healthcheck port, injected
-variables) follows Railway's current documentation and SDK, and the container
-side of it is exercised locally with the same variables Railway injects.
+| Verified | How |
+| --- | --- |
+| The image builds | `docker buildx build` from this `Dockerfile` |
+| The container boots and stays up | supervisord with all five services `RUNNING` |
+| XRDP starts and listens | port 3389 bound, sesman loopback-only on 3350 |
+| XFCE starts | `xfce4-session`, `xfwm4`, `xfce4-panel`, `xfdesktop`, `xfsettingsd` alive in the session |
+| An RDP session can really be created | `xfreerdp` logs in with the generated password and gets a session owned by `ubuntu` |
+| File manager and terminal are reachable | Thunar, xfce4-terminal, Geany and Firefox windows opened on the session's X display and found with `xdotool` |
+| Python, Node, npm, Git work | `venv` + `pip`, `npm init` + `node -e`, `git init` + commit, all as the desktop user |
+| Ports are what they should be | exactly two public listeners (3389, 8080) |
+| Health checks work | `/health` returns 200 with the right payload, the Docker `HEALTHCHECK` script passes |
+| Startup logs are clean | no fatal errors; the only tolerated lines are documented upstream quirks |
+| Shutdown is graceful | `SIGTERM` stops every service in order, exit code 0, in ~2 s |
+| Disconnect does not kill the desktop | the session keeps the same PID after the client is killed, and is resumed on reconnect |
+| Persistence works | password, files and desktop config survive replacing the container on the same volume |
+| The no-volume warning is honest | a container without a volume says so loudly and reports `storage.persistent = false` |
+
+**Not verified:** an actual Railway deployment, and connecting from a physical
+Android handset. Both need a Railway account (and a phone), which the author
+and the CI environment do not have. Everything Railway-specific here - the
+TCP proxy on 3389, the volume at `/data`, `PORT=8080`, the healthcheck path,
+the injected `RAILWAY_*` variables - follows Railway's current documentation
+and its Infrastructure-as-Code SDK, and the container is exercised in CI with
+the same variables Railway injects at runtime. The RDP protocol path itself
+is verified end to end with a real client; an Android client is a different
+RDP implementation, so expect to pin the resolution as described above.
 
 ---
 

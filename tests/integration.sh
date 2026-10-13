@@ -547,8 +547,13 @@ XRDP_BENIGN=(
     "xrdp_process_main_loop: libxrdp_process_incoming failed"
     "xrdp_iso_send: trans_write_copy_s failed"
     "SSL_read: Failure in SSL library"
+    "SSL_write: I/O error"
     "unexpected eof while reading"
     "SSL_shutdown"
+    "xrdp_mcs_send: xrdp_iso_send failed"
+    "xrdp_sec_send: xrdp_mcs_send failed"
+    "xrdp_rdp_send_data: xrdp_sec_send failed"
+    "xrdp_wm_send_bitmap"
     "DisconnectProviderUltimatum failed"
     "xrdp_mm_module_cleanup"
 )
