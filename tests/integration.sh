@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  Ubuntu Cloud PC - end to end test suite
+# =============================================================================
+#  Builds nothing: point it at an image that is already built.
+#
+#    tests/integration.sh [IMAGE]            (default: cloudpc:test)
+#
+#  Requirements on the host: docker, and - for the real RDP login test -
+#  xfreerdp (freerdp2-x11) plus xvfb-run. The RDP tests are skipped with a
+#  loud warning when those are not installed.
+#
+#  Everything it checks:
+#    1  container boots and stays up
+#    2  startup banner prints the generated credentials
+#    3  /health becomes 200 and reports the expected structure
+#    4  only the intended ports listen on a public interface
+#    5  desktop toolchain works (python, pip, node, npm, git, editors, ...)
+#    6  a real RDP client can authenticate and gets an XFCE session
+#    7  file manager and terminal open inside that session
+#    8  the session survives client disconnect and is resumed on reconnect
+#    9  /admin requires authentication and works with the desktop credentials
+#   10  logs are free of fatal errors
+#   11  SIGTERM shuts the container down gracefully (exit 0)
+#   12  volume data and the password survive a container replacement
+#   13  running without a volume prints the ephemeral storage warning
+# =============================================================================
+set -uo pipefail
+
+IMAGE="${1:-cloudpc:test}"
+CONTAINER="cloudpc-test-$$"
+VOLUME="cloudpc-test-vol-$$"
+HOST_RDP_PORT="${HOST_RDP_PORT:-13389}"
+HOST_HTTP_PORT="${HOST_HTTP_PORT:-18080}"
+ARTIFACTS="${ARTIFACTS:-$(pwd)/test-results}"
+KEEP="${KEEP:-false}"
+
+mkdir -p "${ARTIFACTS}"
+
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+FAILED_TESTS=()
+
+RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLU=$'\033[34m'; RST=$'\033[0m'
+[ -t 1 ] || { RED=""; GRN=""; YLW=""; BLU=""; RST=""; }
+
+section() { printf '\n%s=== %s %s\n' "${BLU}" "$*" "${RST}"; }
+ok()      { PASS_COUNT=$((PASS_COUNT+1)); printf '%sPASS%s %s\n' "${GRN}" "${RST}" "$*"; }
+fail()    { FAIL_COUNT=$((FAIL_COUNT+1)); FAILED_TESTS+=("$*"); printf '%sFAIL%s %s\n' "${RED}" "${RST}" "$*"; }
+skip()    { SKIP_COUNT=$((SKIP_COUNT+1)); printf '%sSKIP%s %s\n' "${YLW}" "${RST}" "$*"; }
+info()    { printf '     %s\n' "$*"; }
+
+check() { # check <description> <command...>
+    local desc="$1"; shift
+    if "$@" >/dev/null 2>&1; then ok "${desc}"; else fail "${desc}"; fi
+}
+
+dexec() { docker exec "${CONTAINER}" "$@"; }
+duser() { docker exec -u "${DESKTOP_USER}" "${CONTAINER}" "$@"; }
+
+cleanup() {
+    local rc=$?
+    section "cleanup"
+    docker logs "${CONTAINER}" > "${ARTIFACTS}/container.log" 2>&1 || true
+    if [ "${KEEP}" = "true" ]; then
+        info "keeping container ${CONTAINER} and volume ${VOLUME}"
+    else
+        docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+        docker rm -f "${CONTAINER}-restart" >/dev/null 2>&1 || true
+        docker rm -f "${CONTAINER}-ephemeral" >/dev/null 2>&1 || true
+        docker volume rm -f "${VOLUME}" >/dev/null 2>&1 || true
+    fi
+    exit "${rc}"
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+section "0. environment"
+# ---------------------------------------------------------------------------
+docker image inspect "${IMAGE}" >/dev/null 2>&1 || { echo "image ${IMAGE} not found"; exit 2; }
+IMAGE_SIZE="$(docker image inspect "${IMAGE}" --format '{{.Size}}')"
+info "image      : ${IMAGE} ($((IMAGE_SIZE / 1024 / 1024)) MB)"
+info "docker     : $(docker version --format '{{.Server.Version}}')"
+HAVE_RDP=false
+RDP_BIN=""
+for candidate in xfreerdp xfreerdp3; do
+    if command -v "${candidate}" >/dev/null 2>&1 && command -v xvfb-run >/dev/null 2>&1; then
+        HAVE_RDP=true; RDP_BIN="${candidate}"; break
+    fi
+done
+info "rdp client : ${RDP_BIN:-not installed}"
+
+# ---------------------------------------------------------------------------
+section "1. container boots"
+# ---------------------------------------------------------------------------
+docker volume create "${VOLUME}" >/dev/null
+docker run -d --name "${CONTAINER}" \
+    -p "${HOST_RDP_PORT}:3389" -p "${HOST_HTTP_PORT}:8080" \
+    -v "${VOLUME}:/data" \
+    -e RAILWAY_VOLUME_MOUNT_PATH=/data \
+    -e RAILWAY_SERVICE_NAME=cloud-pc-test \
+    -e RAILWAY_ENVIRONMENT_NAME=test \
+    --shm-size=512m \
+    "${IMAGE}" >/dev/null
+
+sleep 5
+if [ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER}")" = "true" ]; then
+    ok "container is running"
+else
+    fail "container exited immediately"
+    docker logs "${CONTAINER}" 2>&1 | tail -50
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+section "2. startup banner and generated credentials"
+# ---------------------------------------------------------------------------
+DESKTOP_USER="ubuntu"
+RDP_PASSWORD=""
+for _ in $(seq 1 60); do
+    RDP_PASSWORD="$(docker logs "${CONTAINER}" 2>&1 \
+        | sed -n 's/^ *Password *: *\([a-z0-9-]\{20,\}\) *$/\1/p' | head -1)"
+    [ -n "${RDP_PASSWORD}" ] && break
+    sleep 1
+done
+if [ -n "${RDP_PASSWORD}" ]; then
+    ok "startup log contains a generated password (${#RDP_PASSWORD} chars)"
+else
+    fail "no generated password found in the startup log"
+fi
+docker logs "${CONTAINER}" 2>&1 | grep -q "persistent volume at /data" \
+    && ok "persistent volume detected" || fail "volume not detected as persistent"
+
+# ---------------------------------------------------------------------------
+section "3. health endpoint"
+# ---------------------------------------------------------------------------
+HEALTH_OK=false
+for _ in $(seq 1 120); do
+    code="$(curl -fsS -o "${ARTIFACTS}/health.json" -w '%{http_code}' \
+        "http://127.0.0.1:${HOST_HTTP_PORT}/health" 2>/dev/null || true)"
+    if [ "${code}" = "200" ]; then HEALTH_OK=true; break; fi
+    sleep 1
+done
+if [ "${HEALTH_OK}" = true ]; then
+    ok "/health returned 200"
+    info "$(tr -d '\n ' < "${ARTIFACTS}/health.json" | cut -c1-240)"
+    for field in '.status' '.checks.xrdp' '.checks.xrdp_sesman' '.storage.persistent' '.sessions'; do
+        if jq -e "${field}" "${ARTIFACTS}/health.json" >/dev/null 2>&1; then
+            ok "/health exposes ${field}"
+        else
+            fail "/health is missing ${field}"
+        fi
+    done
+    [ "$(jq -r '.checks.xrdp' "${ARTIFACTS}/health.json")" = "true" ] \
+        && ok "health reports xrdp up" || fail "health reports xrdp down"
+    [ "$(jq -r '.storage.persistent' "${ARTIFACTS}/health.json")" = "true" ] \
+        && ok "health reports persistent storage" || fail "health reports ephemeral storage"
+else
+    fail "/health never returned 200"
+    docker logs "${CONTAINER}" 2>&1 | tail -40
+fi
+code="$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HOST_HTTP_PORT}/" 2>/dev/null || true)"
+[ "${code}" = "200" ] && ok "status page returns 200" || fail "status page returned ${code}"
+curl -fsS "http://127.0.0.1:${HOST_HTTP_PORT}/" 2>/dev/null | grep -qi "${RDP_PASSWORD:-__nope__}" \
+    && fail "status page leaks the password" || ok "status page contains no credentials"
+
+# ---------------------------------------------------------------------------
+section "4. service supervision and open ports"
+# ---------------------------------------------------------------------------
+dexec supervisorctl -c /opt/cloudpc/supervisor/supervisord.conf status \
+    > "${ARTIFACTS}/supervisor.txt" 2>&1 || true
+cat "${ARTIFACTS}/supervisor.txt" | sed 's/^/     /'
+for prog in dbus xrdp-sesman xrdp status-server watchdog; do
+    grep -qE "^${prog}\s+RUNNING" "${ARTIFACTS}/supervisor.txt" \
+        && ok "supervisor: ${prog} RUNNING" || fail "supervisor: ${prog} not running"
+done
+
+dexec ss -lntH > "${ARTIFACTS}/ports.txt" 2>&1 || true
+cat "${ARTIFACTS}/ports.txt" | sed 's/^/     /'
+PUBLIC_PORTS="$(awk '{print $4}' "${ARTIFACTS}/ports.txt" \
+    | grep -E '^(0\.0\.0\.0|\*|\[::\]):' | sed 's/.*://' | sort -un | tr '\n' ' ')"
+if [ "$(echo "${PUBLIC_PORTS}" | tr -s ' ' | sed 's/ $//')" = "3389 8080" ]; then
+    ok "exactly two public listeners: 3389 (RDP) and 8080 (HTTP)"
+else
+    fail "unexpected public listeners: ${PUBLIC_PORTS}"
+fi
+grep -qE '127\.0\.0\.1:3350' "${ARTIFACTS}/ports.txt" \
+    && ok "xrdp-sesman bound to loopback only" || fail "xrdp-sesman is not loopback-only"
+
+check "docker HEALTHCHECK script passes" dexec /opt/cloudpc/bin/cloudpc-health --quiet
+
+# ---------------------------------------------------------------------------
+section "5. desktop toolchain"
+# ---------------------------------------------------------------------------
+tool_version() { # tool_version <label> <command...>
+    local label="$1"; shift
+    local out
+    if out="$(duser "$@" 2>&1 | head -1)"; then
+        ok "${label}: ${out}"
+    else
+        fail "${label} failed: ${out}"
+    fi
+}
+tool_version "python3"         python3 --version
+tool_version "pip3"            pip3 --version
+tool_version "node"            node --version
+tool_version "npm"             npm --version
+tool_version "git"             git --version
+tool_version "firefox"         firefox --version
+tool_version "geany"           geany --version
+tool_version "thunar"          thunar --version
+tool_version "xfce4-terminal"  xfce4-terminal --version
+tool_version "xfce4-session"   xfce4-session --version
+tool_version "Xvnc"            Xvnc -version
+tool_version "xrdp"            xrdp --version
+
+info "running a real python/node/git workload as ${DESKTOP_USER}"
+duser bash -lc 'cd ~ && python3 -m venv /tmp/venv-test && /tmp/venv-test/bin/pip --version' >/dev/null 2>&1 \
+    && ok "python venv + pip usable" || fail "python venv creation failed"
+duser bash -lc 'cd /tmp && rm -rf npmtest && mkdir npmtest && cd npmtest && npm init -y >/dev/null && node -e "console.log(2+2)"' \
+    > "${ARTIFACTS}/node.txt" 2>&1 \
+    && [ "$(tail -1 "${ARTIFACTS}/node.txt")" = "4" ] \
+    && ok "npm init + node execution work" || fail "npm/node workload failed"
+duser bash -lc 'cd /tmp && rm -rf gittest && mkdir gittest && cd gittest && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m x && git log --oneline' \
+    >/dev/null 2>&1 && ok "git init + commit work" || fail "git workload failed"
+duser bash -lc 'test -w ~ && touch ~/write-test && rm ~/write-test' \
+    && ok "home directory is writable by ${DESKTOP_USER}" || fail "home directory is not writable"
+duser bash -lc 'readlink -f ~' | grep -q '^/data/home' \
+    && ok "home directory lives on the volume" || fail "home directory is not on the volume"
+
+# ---------------------------------------------------------------------------
+section "6. RDP login creates a desktop session"
+# ---------------------------------------------------------------------------
+rdp_connect() { # rdp_connect <seconds> <logfile>
+    local secs="$1" logfile="$2"
+    xvfb-run -a --server-args="-screen 0 1280x800x24" \
+        timeout "${secs}" "${RDP_BIN}" \
+        "/v:127.0.0.1:${HOST_RDP_PORT}" "/u:${DESKTOP_USER}" "/p:${RDP_PASSWORD}" \
+        /cert:ignore /size:1280x800 /bpp:24 -grab-keyboard /log-level:INFO \
+        > "${logfile}" 2>&1 &
+    echo $!
+}
+
+SESSION_PID=""
+if [ "${HAVE_RDP}" != true ]; then
+    skip "RDP client test (xfreerdp/xvfb-run not installed)"
+elif [ -z "${RDP_PASSWORD}" ]; then
+    skip "RDP client test (no password was captured)"
+else
+    CLIENT_PID="$(rdp_connect 70 "${ARTIFACTS}/rdp-client-1.log")"
+    SESSION_UP=false
+    for _ in $(seq 1 60); do
+        if dexec pgrep -x xfce4-session >/dev/null 2>&1; then SESSION_UP=true; break; fi
+        kill -0 "${CLIENT_PID}" 2>/dev/null || break
+        sleep 1
+    done
+    if [ "${SESSION_UP}" = true ]; then
+        ok "RDP authentication succeeded and an XFCE session was created"
+        SESSION_PID="$(dexec pgrep -x xfce4-session | head -1)"
+        info "xfce4-session pid ${SESSION_PID}"
+        dexec pgrep -a -x 'Xvnc' | sed 's/^/     /'
+        dexec pgrep -x Xvnc >/dev/null 2>&1 \
+            && ok "Xvnc X server running for the session" || fail "no Xvnc process"
+        dexec bash -c 'pgrep -x xfdesktop >/dev/null && pgrep -x xfwm4 >/dev/null && pgrep -x xfce4-panel >/dev/null' \
+            && ok "window manager, panel and desktop are running" \
+            || fail "XFCE components missing (xfwm4 / xfce4-panel / xfdesktop)"
+        SESSION_OWNER="$(dexec ps -o user= -p "${SESSION_PID}" | tr -d ' ')"
+        [ "${SESSION_OWNER}" = "${DESKTOP_USER}" ] \
+            && ok "session runs as ${DESKTOP_USER} (not root)" \
+            || fail "session runs as ${SESSION_OWNER}"
+        curl -fsS "http://127.0.0.1:${HOST_HTTP_PORT}/health" -o "${ARTIFACTS}/health-session.json" 2>/dev/null
+        [ "$(jq -r '.sessions.active' "${ARTIFACTS}/health-session.json" 2>/dev/null)" = "true" ] \
+            && ok "/health reports the active session" || fail "/health does not report the session"
+    else
+        fail "no XFCE session was created after RDP login"
+        tail -40 "${ARTIFACTS}/rdp-client-1.log" | sed 's/^/     /'
+        dexec tail -40 /var/log/xrdp/xrdp-sesman.log | sed 's/^/     /' || true
+    fi
+
+    # -----------------------------------------------------------------------
+    section "7. file manager and terminal inside the session"
+    # -----------------------------------------------------------------------
+    if [ "${SESSION_UP}" = true ]; then
+        DISPLAY_NUM="$(dexec bash -c 'ls /tmp/.X11-unix | head -1 | sed "s/^X/:/"')"
+        info "session display ${DISPLAY_NUM}"
+        gui() { docker exec -u "${DESKTOP_USER}" -e DISPLAY="${DISPLAY_NUM}" "${CONTAINER}" "$@"; }
+        gui xdpyinfo >/dev/null 2>&1 \
+            && ok "X display ${DISPLAY_NUM} is reachable by ${DESKTOP_USER}" \
+            || fail "cannot reach X display ${DISPLAY_NUM}"
+        docker exec -u "${DESKTOP_USER}" -e DISPLAY="${DISPLAY_NUM}" -d "${CONTAINER}" \
+            xfce4-terminal --disable-server --title=cloudpc-test-term >/dev/null 2>&1
+        docker exec -u "${DESKTOP_USER}" -e DISPLAY="${DISPLAY_NUM}" -d "${CONTAINER}" \
+            thunar >/dev/null 2>&1
+        TERM_OK=false; THUNAR_OK=false
+        for _ in $(seq 1 30); do
+            gui xdotool search --class "xfce4-terminal" >/dev/null 2>&1 && TERM_OK=true
+            gui xdotool search --class "Thunar" >/dev/null 2>&1 && THUNAR_OK=true
+            [ "${TERM_OK}" = true ] && [ "${THUNAR_OK}" = true ] && break
+            sleep 1
+        done
+        [ "${TERM_OK}" = true ] && ok "terminal window opened on the desktop" || fail "terminal window did not open"
+        [ "${THUNAR_OK}" = true ] && ok "file manager window opened on the desktop" || fail "file manager window did not open"
+        gui xdotool search --name "." getwindowname %@ 2>/dev/null | sed 's/^/     window: /' | head -10
+    else
+        skip "desktop application tests (no session)"
+    fi
+
+    # -----------------------------------------------------------------------
+    section "8. session survives disconnect and is resumed"
+    # -----------------------------------------------------------------------
+    if [ "${SESSION_UP}" = true ]; then
+        kill "${CLIENT_PID}" 2>/dev/null || true
+        wait "${CLIENT_PID}" 2>/dev/null || true
+        pkill -f "${RDP_BIN}" 2>/dev/null || true
+        sleep 15
+        if dexec pgrep -x xfce4-session >/dev/null 2>&1; then
+            STILL="$(dexec pgrep -x xfce4-session | head -1)"
+            if [ "${STILL}" = "${SESSION_PID}" ]; then
+                ok "desktop session still alive 15s after the client disconnected (pid ${STILL})"
+            else
+                fail "session pid changed after disconnect (${SESSION_PID} -> ${STILL})"
+            fi
+        else
+            fail "desktop session died when the RDP client disconnected"
+        fi
+        CLIENT2_PID="$(rdp_connect 45 "${ARTIFACTS}/rdp-client-2.log")"
+        sleep 25
+        RESUMED="$(dexec pgrep -x xfce4-session | head -1)"
+        [ "${RESUMED}" = "${SESSION_PID}" ] \
+            && ok "reconnect resumed the same session (pid ${RESUMED})" \
+            || fail "reconnect created a new session (${SESSION_PID} -> ${RESUMED})"
+        COUNT="$(dexec pgrep -x -c xfce4-session 2>/dev/null | head -1)"
+        COUNT="${COUNT:-0}"
+        [ "${COUNT}" = "1" ] && ok "exactly one desktop session is running" \
+            || fail "${COUNT} desktop sessions are running (expected 1)"
+        kill "${CLIENT2_PID}" 2>/dev/null || true
+        wait "${CLIENT2_PID}" 2>/dev/null || true
+        pkill -f "${RDP_BIN}" 2>/dev/null || true
+    else
+        skip "session persistence tests (no session)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+section "9. authenticated admin endpoint"
+# ---------------------------------------------------------------------------
+code="$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HOST_HTTP_PORT}/admin" 2>/dev/null || true)"
+[ "${code}" = "401" ] && ok "/admin rejects anonymous requests (401)" || fail "/admin returned ${code} without credentials"
+code="$(curl -s -o /dev/null -w '%{http_code}' -u "${DESKTOP_USER}:wrong-password" "http://127.0.0.1:${HOST_HTTP_PORT}/admin")"
+[ "${code}" = "401" ] && ok "/admin rejects a wrong password" || fail "/admin returned ${code} for a wrong password"
+if [ -n "${RDP_PASSWORD}" ]; then
+    code="$(curl -s -o "${ARTIFACTS}/admin.json" -w '%{http_code}' \
+        -u "${DESKTOP_USER}:${RDP_PASSWORD}" "http://127.0.0.1:${HOST_HTTP_PORT}/admin")"
+    if [ "${code}" = "200" ]; then
+        ok "/admin accepts the desktop credentials"
+        jq -e '.connection.username' "${ARTIFACTS}/admin.json" >/dev/null 2>&1 \
+            && ok "/admin returns connection details" || fail "/admin response is incomplete"
+        grep -q "${RDP_PASSWORD}" "${ARTIFACTS}/admin.json" \
+            && fail "/admin echoes the plaintext password" \
+            || ok "/admin does not echo the plaintext password"
+    else
+        fail "/admin returned ${code} for valid credentials"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+section "10. log inspection"
+# ---------------------------------------------------------------------------
+docker logs "${CONTAINER}" > "${ARTIFACTS}/container.log" 2>&1
+BAD_PATTERNS=(
+    "Traceback (most recent call last)"
+    "entrypoint failed at line"
+    "FATAL"
+    "Segmentation fault"
+    "command not found"
+    "Permission denied"
+    "No such file or directory"
+    "sesman_data_in: scp_process_msg failed"
+    "login failed for display"
+    "Access denied"
+    "xrdp_wm_log_msg: error"
+    "cannot open display"
+    "BACKOFF"
+    "exited: .* (exit status [1-9]"
+)
+LOG_CLEAN=true
+for pattern in "${BAD_PATTERNS[@]}"; do
+    if grep -qE "${pattern}" "${ARTIFACTS}/container.log"; then
+        fail "log contains '${pattern}'"
+        grep -nE "${pattern}" "${ARTIFACTS}/container.log" | head -5 | sed 's/^/     /'
+        LOG_CLEAN=false
+    fi
+done
+[ "${LOG_CLEAN}" = true ] && ok "no fatal errors in the container log"
+dexec cat /var/log/xrdp/xrdp.log > "${ARTIFACTS}/xrdp.log" 2>/dev/null || true
+dexec cat /var/log/xrdp/xrdp-sesman.log > "${ARTIFACTS}/xrdp-sesman.log" 2>/dev/null || true
+if [ -s "${ARTIFACTS}/xrdp-sesman.log" ]; then
+    grep -cE '\[ERROR\]' "${ARTIFACTS}/xrdp-sesman.log" | grep -q '^0$' \
+        && ok "xrdp-sesman log has no ERROR lines" \
+        || { fail "xrdp-sesman log contains ERROR lines"; grep -E '\[ERROR\]' "${ARTIFACTS}/xrdp-sesman.log" | head -5 | sed 's/^/     /'; }
+fi
+
+# ---------------------------------------------------------------------------
+section "11. graceful shutdown"
+# ---------------------------------------------------------------------------
+dexec bash -c "echo persistence-probe > /data/home/${DESKTOP_USER}/persist.txt && chown ${DESKTOP_USER} /data/home/${DESKTOP_USER}/persist.txt"
+START_STOP="$(date +%s)"
+docker stop -t 30 "${CONTAINER}" >/dev/null
+STOP_SECONDS=$(( $(date +%s) - START_STOP ))
+EXIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER}")"
+[ "${STOP_SECONDS}" -lt 25 ] && ok "container stopped in ${STOP_SECONDS}s (no SIGKILL timeout)" \
+    || fail "container needed ${STOP_SECONDS}s to stop"
+[ "${EXIT_CODE}" = "0" ] && ok "clean exit code 0 after SIGTERM" || fail "exit code ${EXIT_CODE} after SIGTERM"
+docker logs "${CONTAINER}" 2>&1 | tail -15 | sed 's/^/     /'
+
+# ---------------------------------------------------------------------------
+section "12. data and credentials survive a container replacement"
+# ---------------------------------------------------------------------------
+docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+docker run -d --name "${CONTAINER}-restart" \
+    -p "$((HOST_HTTP_PORT + 1)):8080" \
+    -v "${VOLUME}:/data" -e RAILWAY_VOLUME_MOUNT_PATH=/data \
+    "${IMAGE}" >/dev/null
+for _ in $(seq 1 90); do
+    curl -fsS -o /dev/null "http://127.0.0.1:$((HOST_HTTP_PORT + 1))/health" 2>/dev/null && break
+    sleep 1
+done
+NEW_PASSWORD="$(docker logs "${CONTAINER}-restart" 2>&1 \
+    | sed -n 's/^ *Password *: *\([a-z0-9-]\{20,\}\) *$/\1/p' | head -1)"
+[ -n "${RDP_PASSWORD}" ] && [ "${NEW_PASSWORD}" = "${RDP_PASSWORD}" ] \
+    && ok "password is stable across container replacement" \
+    || fail "password changed after restart (${RDP_PASSWORD} -> ${NEW_PASSWORD})"
+docker exec "${CONTAINER}-restart" cat "/data/home/${DESKTOP_USER}/persist.txt" 2>/dev/null | grep -q persistence-probe \
+    && ok "user files survived the container replacement" || fail "user files were lost"
+docker exec "${CONTAINER}-restart" test -f "/data/home/${DESKTOP_USER}/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml" \
+    && ok "desktop configuration persisted on the volume" || fail "desktop configuration was lost"
+docker logs "${CONTAINER}-restart" 2>&1 | grep -q "persistent volume" \
+    && ok "restart detected the volume again" || fail "restart did not detect the volume"
+docker rm -f "${CONTAINER}-restart" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+section "13. ephemeral storage warning (no volume attached)"
+# ---------------------------------------------------------------------------
+docker run -d --name "${CONTAINER}-ephemeral" -p "$((HOST_HTTP_PORT + 2)):8080" "${IMAGE}" >/dev/null
+for _ in $(seq 1 90); do
+    curl -fsS -o "${ARTIFACTS}/health-ephemeral.json" "http://127.0.0.1:$((HOST_HTTP_PORT + 2))/health" 2>/dev/null && break
+    sleep 1
+done
+EPHEMERAL_LOG="$(docker logs "${CONTAINER}-ephemeral" 2>&1)"
+echo "${EPHEMERAL_LOG}" | grep -q "WILL BE LOST" \
+    && ok "ephemeral mode prints a clear data loss warning" || fail "no ephemeral storage warning"
+[ "$(jq -r '.storage.persistent' "${ARTIFACTS}/health-ephemeral.json" 2>/dev/null)" = "false" ] \
+    && ok "/health reports storage as not persistent" || fail "/health wrongly claims persistence"
+echo "${EPHEMERAL_LOG}" | grep -q "RDP address" \
+    && ok "ephemeral container still starts the desktop stack" || fail "ephemeral container did not start"
+docker rm -f "${CONTAINER}-ephemeral" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+section "summary"
+# ---------------------------------------------------------------------------
+printf '%spassed: %d%s  %sfailed: %d%s  %sskipped: %d%s\n' \
+    "${GRN}" "${PASS_COUNT}" "${RST}" "${RED}" "${FAIL_COUNT}" "${RST}" "${YLW}" "${SKIP_COUNT}" "${RST}"
+if [ "${FAIL_COUNT}" -gt 0 ]; then
+    printf '\nfailed tests:\n'
+    printf '  - %s\n' "${FAILED_TESTS[@]}"
+    exit 1
+fi
+exit 0

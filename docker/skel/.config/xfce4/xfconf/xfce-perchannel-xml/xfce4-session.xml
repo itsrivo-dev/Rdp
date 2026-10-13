@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- No logout confirmation dialogs and no session saving: the desktop is
+     meant to stay exactly as you left it between RDP reconnects. -->
+<channel name="xfce4-session" version="1.0">
+  <property name="general" type="empty">
+    <property name="FailsafeSessionName" type="string" value="Failsafe"/>
+    <property name="SessionName" type="string" value="Default"/>
+    <property name="SaveOnExit" type="bool" value="false"/>
+    <property name="PromptOnLogout" type="bool" value="false"/>
+    <property name="AutoSave" type="bool" value="false"/>
+  </property>
+  <property name="shutdown" type="empty">
+    <property name="LockScreen" type="bool" value="false"/>
+    <property name="ShowSuspend" type="bool" value="false"/>
+    <property name="ShowHibernate" type="bool" value="false"/>
+  </property>
+  <property name="security" type="empty">
+    <property name="EnableTcpSyscall" type="bool" value="false"/>
+  </property>
+  <property name="startup" type="empty">
+    <property name="ssh-agent" type="empty">
+      <property name="enabled" type="bool" value="true"/>
+      <property name="type" type="string" value="ssh-agent"/>
+    </property>
+    <property name="gpg-agent" type="empty">
+      <property name="enabled" type="bool" value="false"/>
+    </property>
+  </property>
+</channel>

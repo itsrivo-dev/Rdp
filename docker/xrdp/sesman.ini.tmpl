@@ -1,0 +1,65 @@
+; =============================================================================
+;  sesman.ini - rendered at container start by /opt/cloudpc/entrypoint.sh
+; =============================================================================
+[Globals]
+; Loopback only: the session manager must never be reachable from outside.
+ListenAddress=127.0.0.1
+ListenPort=3350
+EnableUserWindowManager=true
+UserWindowManager=startwm.sh
+DefaultWindowManager=startwm.sh
+ReconnectScript=reconnectwm.sh
+
+[Security]
+AllowRootLogin=false
+MaxLoginRetry=3
+; Only members of the tsusers group may open a remote desktop session.
+TerminalServerUsers=tsusers
+TerminalServerAdmins=tsadmins
+AlwaysGroupCheck=true
+RestrictOutboundClipboard=false
+
+[Sessions]
+X11DisplayOffset=10
+MaxSessions=@@RDP_MAX_SESSIONS@@
+; The desktop must survive a disconnect: never kill a session when the RDP
+; client goes away, and never time out an idle or disconnected session.
+KillDisconnected=false
+DisconnectedTimeLimit=0
+IdleTimeLimit=0
+Policy=Default
+
+[Logging]
+LogFile=/var/log/xrdp/xrdp-sesman.log
+LogLevel=INFO
+EnableSyslog=false
+EnableConsole=true
+ConsoleLevel=INFO
+
+; -----------------------------------------------------------------------------
+; X server backend. Xvnc (TigerVNC) is container-safe: no virtual terminal,
+; no DRM device and no root X server required.
+; -----------------------------------------------------------------------------
+[Xvnc]
+param=Xvnc
+param=-bs
+param=-nolisten
+param=tcp
+param=-localhost
+param=-SecurityTypes
+param=VncAuth
+param=-dpi
+param=@@RDP_DPI@@
+
+[Chansrv]
+FuseMountName=thinclient_drives
+FileUmask=077
+
+[ChansrvLogging]
+LogLevel=INFO
+EnableSyslog=false
+EnableConsole=true
+ConsoleLevel=INFO
+
+[SessionVariables]
+LANG=en_US.UTF-8

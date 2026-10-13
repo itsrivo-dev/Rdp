@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  Service watchdog - the "health check + restart handling" part of the stack.
+#
+#  Every CLOUDPC_WATCHDOG_INTERVAL seconds it probes the RDP listener, the
+#  session manager and the status server. A service that fails two consecutive
+#  probes is restarted through supervisord. Desktop sessions are never touched.
+# =============================================================================
+set -uo pipefail
+
+CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
+# shellcheck source=../lib/common.sh
+. "${CLOUDPC_ROOT}/lib/common.sh"
+
+INTERVAL="${CLOUDPC_WATCHDOG_INTERVAL:-30}"
+GRACE="${CLOUDPC_WATCHDOG_GRACE:-30}"
+RDP_PORT="${RDP_PORT:-3389}"
+HTTP_PORT="${PORT:-8080}"
+SUPERVISORCTL="supervisorctl -c ${CLOUDPC_ROOT}/supervisor/supervisord.conf"
+
+declare -A FAILURES=( [xrdp]=0 [xrdp-sesman]=0 [status-server]=0 )
+
+running=true
+shutdown() { running=false; }
+trap shutdown TERM INT
+
+log "watchdog started (interval ${INTERVAL}s, grace ${GRACE}s)"
+sleep "${GRACE}"
+
+probe() {
+    case "$1" in
+        xrdp)          tcp_open 127.0.0.1 "${RDP_PORT}" ;;
+        xrdp-sesman)   tcp_open 127.0.0.1 3350 ;;
+        status-server) tcp_open 127.0.0.1 "${HTTP_PORT}" ;;
+    esac
+}
+
+while [ "${running}" = true ]; do
+    for service in xrdp xrdp-sesman status-server; do
+        if probe "${service}"; then
+            if [ "${FAILURES[$service]}" -ne 0 ]; then
+                log "watchdog: ${service} recovered"
+            fi
+            FAILURES[$service]=0
+        else
+            FAILURES[$service]=$(( FAILURES[$service] + 1 ))
+            warn "watchdog: ${service} probe failed (${FAILURES[$service]})"
+            if [ "${FAILURES[$service]}" -ge 2 ]; then
+                warn "watchdog: restarting ${service}"
+                ${SUPERVISORCTL} restart "${service}" >/dev/null 2>&1 || \
+                    err "watchdog: could not restart ${service}"
+                FAILURES[$service]=0
+            fi
+        fi
+    done
+    # Sleep in short slices so SIGTERM is handled promptly.
+    for _ in $(seq 1 "${INTERVAL}"); do
+        [ "${running}" = true ] || break
+        sleep 1
+    done
+done
+
+log "watchdog stopped"
+exit 0
