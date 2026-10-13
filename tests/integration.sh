@@ -72,6 +72,24 @@ logs_contain() {
     return "${rc}"
 }
 
+# mem_mb <container> -- resident memory of everything inside the container,
+# in whole megabytes.
+mem_mb() {
+    docker stats --no-stream --format '{{.MemUsage}}' "$1" 2>/dev/null \
+        | awk '{
+            value = $1 + 0
+            unit = $1
+            sub(/^[0-9.]+/, "", unit)
+            if (unit == "GiB" || unit == "GB") value *= 1024
+            else if (unit == "KiB" || unit == "kB") value /= 1024
+            else if (unit == "B") value /= 1048576
+            printf "%d\n", value
+            found = 1
+            exit
+        }
+        END { if (!found) print 0 }'
+}
+
 # http_code <url> [curl args...] -- prints the response code, never fails.
 http_code() {
     local url="$1"; shift
@@ -227,6 +245,14 @@ else
 fi
 
 check "docker HEALTHCHECK script passes" dexec /opt/cloudpc/bin/cloudpc-health --quiet
+
+IDLE_MB="$(mem_mb "${CONTAINER}")"
+info "idle memory (no desktop session): ${IDLE_MB} MB"
+if [ "${IDLE_MB}" -gt 0 ] && [ "${IDLE_MB}" -lt 512 ]; then
+    ok "idle footprint is small (${IDLE_MB} MB < 512 MB)"
+else
+    fail "idle footprint is ${IDLE_MB} MB"
+fi
 
 # ---------------------------------------------------------------------------
 section "5. desktop toolchain"
@@ -416,6 +442,14 @@ else
         [ "${LAUNCHERS_OK}" = true ] \
             && ok "panel launchers for terminal, files, browser and editor are installed" \
             || fail "panel launcher directories are missing from the home directory"
+        SESSION_MB="$(mem_mb "${CONTAINER}")"
+        info "memory with a live desktop session + terminal, files, editor and browser: ${SESSION_MB} MB"
+        if [ "${SESSION_MB}" -gt 0 ] && [ "${SESSION_MB}" -lt 1536 ]; then
+            ok "session footprint fits a small Railway instance (${SESSION_MB} MB < 1536 MB)"
+        else
+            fail "session footprint is ${SESSION_MB} MB"
+        fi
+
         # Leave a clean desktop behind for the reconnect test.
         duser pkill -u "${DESKTOP_USER}" -x firefox >/dev/null 2>&1 || true
         duser pkill -u "${DESKTOP_USER}" -x geany >/dev/null 2>&1 || true

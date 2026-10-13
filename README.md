@@ -54,8 +54,11 @@ Android RDP app  ──TLS/RDP──▶  Railway TCP proxy  ──▶  xrdp (338
 | Admin tools | `cloudpc-status`, `cloudpc-health`, `cloudpc-credentials` |
 
 Everything is installed with `--no-install-recommends` and without docs/man
-pages. No audio stack, no snapd, no systemd, no desktop search indexer - the
-idle desktop uses roughly 250-400 MB RAM.
+pages. No audio stack, no snapd, no systemd, no desktop search indexer. The
+image is about **1.1 GB**; the measured idle footprint (container booted, no
+one connected) and the footprint with a live desktop session are printed by
+the test suite on every CI run - see
+[what has been verified](#what-has-been-verified).
 
 ---
 
@@ -112,9 +115,14 @@ Option A does both for you through the CLI.
 
 ## Connect from Android
 
-Any RDP client that supports TLS and a custom port works. Tested
-configurations use the Microsoft client; `aFreeRDP` and `Remmina`-compatible
-clients work the same way.
+The server speaks standard RDP with TLS and is driven in CI by a real
+`xfreerdp` client, so any Android client that supports TLS and a custom port
+should work: Microsoft's **Windows App** (formerly *Microsoft Remote
+Desktop*), **aFreeRDP**, **RD Client** forks, **Jump Desktop** and so on. The
+steps below use Microsoft's client because it is the one most people have.
+
+> The author has **not** connected to a deployed instance from a physical
+> Android device - see [what has been verified](#what-has-been-verified).
 
 **Microsoft "Windows App" / "Remote Desktop" (Android)**
 
