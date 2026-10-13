@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Human readable overview of the running Cloud PC (services, sessions, storage).
+set -uo pipefail
+
+CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
+# shellcheck source=../lib/common.sh
+. "${CLOUDPC_ROOT}/lib/common.sh"
+
+echo "== services =================================================="
+supervisorctl -c "${CLOUDPC_ROOT}/supervisor/supervisord.conf" status 2>/dev/null \
+    || echo "supervisord is not reachable"
+
+echo
+echo "== health ===================================================="
+cloudpc-health || true
+
+echo
+echo "== desktop sessions =========================================="
+if pgrep -x xfce4-session >/dev/null 2>&1; then
+    pgrep -a -x 'Xvnc|xfce4-session' | sed 's/^/  /'
+else
+    echo "  none (a session is created when an RDP client connects)"
+fi
+
+echo
+echo "== listening sockets ========================================="
+(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null) | sed 's/^/  /'
+
+echo
+echo "== storage ==================================================="
+python3 -c 'import json;d=json.load(open("/run/cloudpc/runtime.json"));print("  "+d["storage_note"]);print("  home: "+d["home"])' 2>/dev/null \
+    || echo "  runtime information unavailable"
+df -h "$(python3 -c 'import json;print(json.load(open("/run/cloudpc/runtime.json"))["data_dir"])' 2>/dev/null || echo /)" 2>/dev/null | sed 's/^/  /'

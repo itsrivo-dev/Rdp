@@ -1,0 +1,40 @@
+Ubuntu Cloud PC - quick reference
+=================================
+
+You are on a real Ubuntu 22.04 LTS desktop (XFCE) running in a container.
+
+What is installed
+-----------------
+  Terminal .......... xfce4-terminal        (Applications > Terminal Emulator)
+  File manager ...... Thunar                (Applications > File Manager)
+  Browser ........... Firefox
+  Code editor ....... Geany
+  Languages ......... python3 + pip, node + npm, git
+  Utilities ......... curl, wget, jq, htop, zip/unzip, rsync, ssh client, tree
+
+Your files
+----------
+  If a Railway Volume is attached, your home directory lives on it and
+  survives restarts and redeploys. Run `cloudpc-status` in a terminal to see
+  whether storage is persistent or ephemeral.
+
+  Anything installed with `sudo apt install` goes into the container
+  filesystem, NOT the volume, so it disappears on the next deploy. Keep a
+  setup script in your home directory if you need extra packages.
+
+Staying connected
+-----------------
+  Closing the Remote Desktop app does not close this session - reconnect with
+  the same user, password and screen size and you are back where you were.
+  The session only ends if you log out, or if Railway stops or replaces the
+  container.
+
+  Tip: set a fixed resolution in your Android RDP client (and lock the screen
+  rotation). xrdp keys sessions by screen size, so connecting with a different
+  size starts a second, empty desktop instead of resuming this one.
+
+Admin
+-----
+  sudo ............... your desktop password
+  cloudpc-status ..... services, sessions, storage
+  sudo cloudpc-credentials ... show the current connection details

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Single-shot health probe.
+#   exit 0 -> RDP is accepting connections and the session manager is up
+#   exit 1 -> not healthy (used by Docker HEALTHCHECK and the watchdog)
+# Usage: cloudpc-health [--quiet] [--json]
+set -uo pipefail
+
+CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
+# shellcheck source=../lib/common.sh
+. "${CLOUDPC_ROOT}/lib/common.sh"
+
+QUIET=false
+JSON=false
+for arg in "$@"; do
+    case "$arg" in
+        -q|--quiet) QUIET=true ;;
+        -j|--json)  JSON=true ;;
+        -h|--help)  echo "usage: cloudpc-health [--quiet] [--json]"; exit 0 ;;
+    esac
+done
+
+RDP_PORT="${RDP_PORT:-3389}"
+HTTP_PORT="${PORT:-8080}"
+
+rc=0
+status_rdp=ok;    port_listening "${RDP_PORT}"  || { status_rdp=down; rc=1; }
+status_sesman=ok; port_listening 3350           || { status_sesman=down; rc=1; }
+status_http=ok;   port_listening "${HTTP_PORT}" || status_http=down
+
+if [ "${JSON}" = true ]; then
+    printf '{"rdp":"%s","sesman":"%s","http":"%s","healthy":%s}\n' \
+        "${status_rdp}" "${status_sesman}" "${status_http}" \
+        "$([ "${rc}" -eq 0 ] && echo true || echo false)"
+elif [ "${QUIET}" != true ]; then
+    printf 'rdp(%s)=%s  sesman(3350)=%s  http(%s)=%s\n' \
+        "${RDP_PORT}" "${status_rdp}" "${status_sesman}" "${HTTP_PORT}" "${status_http}"
+fi
+
+exit "${rc}"

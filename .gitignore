@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# Secrets & credentials -- never commit these
+# ---------------------------------------------------------------------------
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.gpg
+*.asc
+.env
+.env.*
+!.env.example
+secrets/
+.secrets/
+credentials
+credentials.json
+*credentials*.json
+rdp_password
+rdp_password.txt
+*.password
+auth.json
+.netrc
+.npmrc
+id_rsa*
+id_ed25519*
+known_hosts
+
+# Railway / cloud CLI state
+.railway/.cache/
+.railwayignore
+railway.local.json
+*.railway.local.*
+
+# ---------------------------------------------------------------------------
+# Local runtime / test data (never belongs in git)
+# ---------------------------------------------------------------------------
+.testdata/
+testdata/
+test-results/
+test-report*.md
+test-report*.txt
+container-logs/
+*.log
+logs/
+data/
+volume/
+home-volume/
+
+# ---------------------------------------------------------------------------
+# Dependencies & build output
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Editors / OS noise / temporary files
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+tmp/
+temp/
+.cache/

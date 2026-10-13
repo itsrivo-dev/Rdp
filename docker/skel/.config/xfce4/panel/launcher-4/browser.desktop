@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Firefox
+Comment=Browse the web
+Exec=firefox %u
+Icon=firefox
+Terminal=false
+StartupNotify=true
+Categories=Network;WebBrowser;
