@@ -25,7 +25,6 @@ import hmac
 import html
 import json
 import os
-import socket
 import subprocess
 import threading
 import time
@@ -59,12 +58,29 @@ def read_json(path: str) -> dict:
         return {}
 
 
-def tcp_ready(port: int, host: str = "127.0.0.1", timeout: float = 2.0) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+def port_listening(port: int) -> bool:
+    """True when any process LISTENs on *port*, on any address family.
+
+    /proc is read instead of opening a socket on purpose: a bare TCP connect
+    to xrdp logs a failed RDP handshake every time, and xrdp binds the session
+    manager's loopback address to ::1 on dual stack hosts, which an IPv4-only
+    connect probe would report as an outage.
+    """
+    want = "%04X" % port
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                next(fh, None)  # header
+                for line in fh:
+                    fields = line.split()
+                    if len(fields) < 4 or fields[3] != "0A":
+                        continue
+                    local = fields[1].rsplit(":", 1)
+                    if len(local) == 2 and local[1].upper() == want:
+                        return True
+        except OSError:
+            continue
+    return False
 
 
 def run(cmd: list[str], timeout: float = 5.0) -> str:
@@ -123,8 +139,8 @@ def health_state() -> tuple[bool, dict]:
     runtime = read_json(RUNTIME_FILE)
     rdp_port = int(runtime.get("rdp_port", os.environ.get("RDP_PORT", 3389)))
     checks = {
-        "xrdp": tcp_ready(rdp_port),
-        "xrdp_sesman": tcp_ready(3350),
+        "xrdp": port_listening(rdp_port),
+        "xrdp_sesman": port_listening(3350),
         "dbus": os.path.exists("/run/dbus/system_bus_socket"),
         "config": os.path.exists("/etc/xrdp/xrdp.ini"),
     }

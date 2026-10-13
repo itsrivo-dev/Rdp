@@ -142,9 +142,10 @@ if grep -rnIE "TODO|FIXME|PLACEHOLDER|coming soon|not implemented" "${SCAN_PATHS
 else
     ok "no TODO/FIXME markers"
 fi
-for required in Dockerfile README.md .gitignore .dockerignore docker/entrypoint.sh \
+for required in Dockerfile README.md LICENSE .gitignore .dockerignore docker/entrypoint.sh \
                 docker/supervisor/supervisord.conf docker/health/server.py \
-                docker/xrdp/xrdp.ini.tmpl docker/xrdp/sesman.ini.tmpl .railway/railway.ts; do
+                docker/xrdp/xrdp.ini.tmpl docker/xrdp/sesman.ini.tmpl .railway/railway.ts \
+                scripts/railway-setup.sh tests/integration.sh; do
     [ -f "${required}" ] && ok "present ${required}" || bad "missing ${required}"
 done
 if git check-ignore -q .env 2>/dev/null; then ok ".gitignore excludes .env"; else bad ".gitignore does not exclude .env"; fi

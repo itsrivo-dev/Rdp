@@ -31,10 +31,40 @@ is_true() {
     esac
 }
 
-# tcp_open <host> <port> -- returns 0 when a TCP connect succeeds.
-# The subshell owns the file descriptor, so nothing leaks into the caller.
-tcp_open() {
-    (exec 3<>"/dev/tcp/${1}/${2}") >/dev/null 2>&1
+# port_listening <port> -- returns 0 when something LISTENs on that TCP port,
+# on any address family.
+#
+# This reads /proc instead of opening a connection, which matters:
+#   * probing xrdp with a bare TCP connect makes it log a failed RDP handshake
+#     every single time, which would bury real errors in the deploy logs;
+#   * xrdp binds the session manager's "127.0.0.1" to ::1 on dual stack hosts,
+#     so an IPv4-only connect probe reports a false outage (and would make the
+#     watchdog restart a perfectly healthy service).
+port_listening() {
+    local hex
+    local files=()
+    printf -v hex '%04X' "$1"
+    [ -r /proc/net/tcp ]  && files+=(/proc/net/tcp)
+    [ -r /proc/net/tcp6 ] && files+=(/proc/net/tcp6)
+    [ "${#files[@]}" -gt 0 ] || return 1
+    awk -v want="${hex}" '
+        $4 == "0A" { split($2, a, ":"); if (a[2] == want) { found = 1 } }
+        END { exit !found }
+    ' "${files[@]}" 2>/dev/null
+}
+
+# http_ok <port> [path] -- returns 0 on a 2xx from the local status server.
+http_ok() {
+    local port="$1" path="${2:-/health}"
+    python3 -c '
+import sys, urllib.request
+url = "http://127.0.0.1:%s%s" % (sys.argv[1], sys.argv[2])
+try:
+    with urllib.request.urlopen(url, timeout=5) as response:
+        sys.exit(0 if 200 <= response.status < 300 else 1)
+except Exception:
+    sys.exit(1)
+' "${port}" "${path}" 2>/dev/null
 }
 
 # render_template <src> <dst> -- substitutes @@KEY@@ placeholders from the

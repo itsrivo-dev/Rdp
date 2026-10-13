@@ -29,9 +29,9 @@ sleep "${GRACE}"
 
 probe() {
     case "$1" in
-        xrdp)          tcp_open 127.0.0.1 "${RDP_PORT}" ;;
-        xrdp-sesman)   tcp_open 127.0.0.1 3350 ;;
-        status-server) tcp_open 127.0.0.1 "${HTTP_PORT}" ;;
+        xrdp)          port_listening "${RDP_PORT}" ;;
+        xrdp-sesman)   port_listening 3350 ;;
+        status-server) port_listening "${HTTP_PORT}" && http_ok "${HTTP_PORT}" / ;;
     esac
 }
 

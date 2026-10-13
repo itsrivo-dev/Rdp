@@ -23,9 +23,9 @@ RDP_PORT="${RDP_PORT:-3389}"
 HTTP_PORT="${PORT:-8080}"
 
 rc=0
-status_rdp=ok;    tcp_open 127.0.0.1 "${RDP_PORT}" || { status_rdp=down; rc=1; }
-status_sesman=ok; tcp_open 127.0.0.1 3350          || { status_sesman=down; rc=1; }
-status_http=ok;   tcp_open 127.0.0.1 "${HTTP_PORT}" || status_http=down
+status_rdp=ok;    port_listening "${RDP_PORT}"  || { status_rdp=down; rc=1; }
+status_sesman=ok; port_listening 3350           || { status_sesman=down; rc=1; }
+status_http=ok;   port_listening "${HTTP_PORT}" || status_http=down
 
 if [ "${JSON}" = true ]; then
     printf '{"rdp":"%s","sesman":"%s","http":"%s","healthy":%s}\n' \
