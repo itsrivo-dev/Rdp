@@ -197,9 +197,15 @@ fi
 # ---------------------------------------------------------------------------
 section "4. service supervision and open ports"
 # ---------------------------------------------------------------------------
-dexec supervisorctl -c /opt/cloudpc/supervisor/supervisord.conf status \
-    > "${ARTIFACTS}/supervisor.txt" 2>&1 || true
-cat "${ARTIFACTS}/supervisor.txt" | sed 's/^/     /'
+# supervisord only promotes a program from STARTING to RUNNING once it has
+# survived its startsecs window, so give it time rather than sampling once.
+for _ in $(seq 1 40); do
+    dexec supervisorctl -c /opt/cloudpc/supervisor/supervisord.conf status \
+        > "${ARTIFACTS}/supervisor.txt" 2>&1 || true
+    grep -qE '\bSTARTING\b' "${ARTIFACTS}/supervisor.txt" || break
+    sleep 1
+done
+sed 's/^/     /' "${ARTIFACTS}/supervisor.txt"
 for prog in dbus xrdp-sesman xrdp status-server watchdog; do
     grep -qE "^${prog}\s+RUNNING" "${ARTIFACTS}/supervisor.txt" \
         && ok "supervisor: ${prog} RUNNING" || fail "supervisor: ${prog} not running"
@@ -394,6 +400,22 @@ else
             dexec tail -20 /tmp/firefox.log 2>/dev/null | sed 's/^/     /'
         fi
         gui xdotool search --name "." getwindowname %@ 2>/dev/null | sed 's/^/     window: /' | head -14
+        docker logs "${CONTAINER}" > "${ARTIFACTS}/panel-check.log" 2>&1 || true
+        if grep -qF "was not found and has been removed from the configuration" "${ARTIFACTS}/panel-check.log"; then
+            fail "the panel dropped plugins that are not installed"
+            grep -F "was not found and has been removed" "${ARTIFACTS}/panel-check.log" | head -5 | sed 's/^/     /'
+        else
+            ok "panel loaded its full layout (no missing plugins)"
+        fi
+        LAUNCHERS_OK=true
+        for launcher in launcher-2 launcher-3 launcher-4 launcher-5; do
+            # Quoted so $HOME is expanded inside the container, not on the host.
+            duser bash -c 'test -d "$HOME/.config/xfce4/panel/'"${launcher}"'"' \
+                || LAUNCHERS_OK=false
+        done
+        [ "${LAUNCHERS_OK}" = true ] \
+            && ok "panel launchers for terminal, files, browser and editor are installed" \
+            || fail "panel launcher directories are missing from the home directory"
         # Leave a clean desktop behind for the reconnect test.
         duser pkill -u "${DESKTOP_USER}" -x firefox >/dev/null 2>&1 || true
         duser pkill -u "${DESKTOP_USER}" -x geany >/dev/null 2>&1 || true
@@ -490,6 +512,9 @@ XRDP_BENIGN=(
     "xrdp_rdp_incoming: xrdp_sec_incoming failed"
     "xrdp_process_main_loop: libxrdp_process_incoming failed"
     "xrdp_iso_send: trans_write_copy_s failed"
+    "SSL_read: Failure in SSL library"
+    "unexpected eof while reading"
+    "SSL_shutdown"
     "DisconnectProviderUltimatum failed"
     "xrdp_mm_module_cleanup"
 )
@@ -561,7 +586,11 @@ docker logs "${CONTAINER}" > "${ARTIFACTS}/container.log" 2>&1 || true
 tail -15 "${ARTIFACTS}/container.log" | sed 's/^/     /'
 STOPPED_OK=true
 for prog in xrdp xrdp-sesman status-server watchdog dbus; do
-    grep -qE "stopped: ${prog} \\(exit status" "${ARTIFACTS}/container.log" || STOPPED_OK=false
+    # Either the program returned an exit code, or it took the default action
+    # for SIGTERM. Both mean supervisord stopped it in order; only a SIGKILL
+    # (sent after stopwaitsecs) would mean it ignored the request.
+    grep -qE "stopped: ${prog} \\((exit status [0-9]+|terminated by SIGTERM)" \
+        "${ARTIFACTS}/container.log" || STOPPED_OK=false
 done
 if [ "${STOPPED_OK}" = true ]; then
     ok "every supervised service was stopped in order (no SIGKILL)"

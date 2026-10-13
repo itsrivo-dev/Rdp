@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Geany
+Comment=Edit code and text files
+Exec=geany %F
+Icon=geany
+Terminal=false
+StartupNotify=true
+Categories=Development;IDE;TextEditor;
