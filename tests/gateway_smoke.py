@@ -164,6 +164,9 @@ def main() -> int:
         "VNC_PORT": str(VNC_FAKE_PORT),
         "VNC_PASSWORD_FILE": os.path.join(run_dir, "vnc_password"),
         "DESKTOP_USER": "ubuntu",
+        # Deliberately small: the connection accounting is checked below, and a
+        # leak has to be visible after a handful of requests, not after 64.
+        "CLOUDPC_MAX_CONNECTIONS": "8",
         "PYTHONPATH": GATEWAY,
     })
 
@@ -280,6 +283,20 @@ def main() -> int:
         check("unsupported methods -> 405", status == 405, str(status))
         status, _, _ = request("GET", "/nope")
         check("unknown paths -> 404", status == 404, str(status))
+
+        # --- connection accounting -------------------------------------------
+        # Every connection takes a slot and must hand it back when it ends, no
+        # matter how it ended. A release on the error path only leaked one slot
+        # per request, and the gateway then answered "503 server is busy" to
+        # everything - including /health - once the slots ran out. The limit is
+        # 8 in this run, so 24 sequential requests must all succeed.
+        refused = []
+        for index in range(24):
+            status, _, _ = request("GET", "/health")
+            if status != 200:
+                refused.append(index)
+        check("connection slots are not leaked (24 requests, 8 slots)",
+              not refused, "refused after %s requests" % (refused[0] if refused else ""))
 
         # --- WebSocket bridge -------------------------------------------------
         def connect(headers=None):

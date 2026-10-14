@@ -113,6 +113,12 @@ dump_diagnostics() {
         docker exec "${name}" bash -c 'tail -30 ~ubuntu/.xsession-errors 2>/dev/null' 2>&1 || true
         echo "--- xfce config present? ---"
         docker exec "${name}" bash -c 'ls -la ~ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/ 2>/dev/null | head' 2>&1 || true
+        echo "--- storage permissions (root view) ---"
+        docker exec "${name}" sh -c 'for p in /data /data/home "$(getent passwd ubuntu | cut -d: -f6)"; do if [ -e "$p" ]; then stat -c "%a %U:%G %n" "$p"; else echo "missing: $p"; fi; done' 2>&1 || true
+        echo "--- the desktop user reaches its own home? ---"
+        docker exec -u ubuntu "${name}" sh -c 'h="$(getent passwd ubuntu | cut -d: -f6)"; [ -d "$h" ] && echo "reachable: $h" || echo "NOT REACHABLE: $h"' 2>&1 || true
+        echo "--- container log (head) ---"
+        docker logs "${name}" 2>&1 | head -40 | sed 's/^/  /'
         echo "--- /proc/net/tcp listeners ---"
         docker exec "${name}" bash -c 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk "\$4 == \"0A\" {print \$2}"' 2>&1 || true
         echo

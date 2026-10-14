@@ -23,7 +23,6 @@ banner() {
     printf '%s\n\n' "$(printf '=%.0s' $(seq 1 74))"
 }
 
-# is_true <value> -- lenient boolean parsing for environment variables.
 cloudpc_home() {
     # The desktop user's home directory.
     #
@@ -40,7 +39,9 @@ cloudpc_home() {
         die "cannot determine the home directory of $(id -un) (HOME_DIR is unset)"
     fi
     if [ ! -d "${dir}" ]; then
-        mkdir -p "${dir}" 2>/dev/null || die "home directory ${dir} does not exist and cannot be created"
+        # Almost always an ancestor directory (the volume root, for instance) that
+        # this unprivileged account cannot traverse - not a missing home.
+        die "home directory ${dir} is not usable by $(id -un): it does not exist, or a directory on the way to it is not traversable"
     fi
     if [ ! -w "${dir}" ]; then
         die "home directory ${dir} is not writable by $(id -un)"
@@ -48,6 +49,32 @@ cloudpc_home() {
     printf '%s' "${dir}"
 }
 
+grant_traverse() {
+    # Let every account walk *through* the directories on the way to <path>.
+    #
+    # The volume root is provided by the platform and can arrive as 0700
+    # root:root; the desktop user then cannot even stat its own home directory,
+    # which surfaces as an obscure failure deep inside the XFCE session. Only
+    # the traverse bit is added, never read access: nothing new becomes listable.
+    local path="$1" mode
+    path="$(dirname "${path}")"
+    while [ -n "${path}" ] && [ "${path}" != "/" ]; do
+        mode="$(stat -c '%a' "${path}" 2>/dev/null || echo "")"
+        case "${mode}" in
+            "" | *[1357]) ;;  # already traversable by everyone, or cannot be stat'ed
+            *)
+                if chmod o+x "${path}" 2>/dev/null; then
+                    log "granted traverse access to ${path} (was ${mode})"
+                else
+                    die "cannot make ${path} traversable by unprivileged users (mode ${mode})"
+                fi
+                ;;
+        esac
+        path="$(dirname "${path}")"
+    done
+}
+
+# is_true <value> -- lenient boolean parsing for environment variables.
 is_true() {
     case "${1,,}" in
         1|true|yes|y|on) return 0 ;;

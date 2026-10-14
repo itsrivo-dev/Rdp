@@ -47,6 +47,7 @@ PYTHON_FILES=(
     tests/unit/test_build_tools.py
     tests/unit/test_entrypoint_blocks.py
     tests/unit/test_supervisor_config.py
+    tests/unit/test_common_shell.py
     tests/gateway_smoke.py
 )
 
@@ -293,7 +294,7 @@ REQUIRED=(
     docker/skel/.config/autostart/cloudpc-defaults.desktop
     tests/integration.sh tests/lint.sh tests/unit/test_gateway.py tests/clients/rfb_probe.py
     tests/unit/test_build_tools.py tests/unit/test_entrypoint_blocks.py
-    tests/unit/test_supervisor_config.py tests/gateway_smoke.py
+    tests/unit/test_supervisor_config.py tests/unit/test_common_shell.py tests/gateway_smoke.py
     .railway/railway.ts .github/workflows/ci.yml
     scripts/build.sh scripts/test.sh scripts/railway-setup.sh
 )

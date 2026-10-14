@@ -122,6 +122,9 @@ install -d -m 0700 -o root -g root "${SECRETS_DIR}"
 export PERSISTENT HOME_DIR SECRETS_DIR
 
 install -d -m 0755 "$(dirname "${HOME_DIR}")"
+# A volume is mounted by the platform, and its root may be root-only (0700):
+# the desktop user must still be able to reach its home through it.
+grant_traverse "${HOME_DIR}"
 if [ ! -d "${HOME_DIR}" ]; then
     log "creating desktop home directory ${HOME_DIR}"
     install -d -m 0750 -o "${DESKTOP_USER}" -g "${DESKTOP_USER}" "${HOME_DIR}"
