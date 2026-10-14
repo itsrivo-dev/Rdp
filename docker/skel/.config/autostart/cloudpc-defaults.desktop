@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Cloud PC defaults
+Comment=Applies the Cloud PC desktop defaults (shortcuts, appearance, background)
+Exec=/opt/cloudpc/bin/cloudpc-apply-defaults
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+OnlyShowIn=XFCE;

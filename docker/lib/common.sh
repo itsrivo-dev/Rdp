@@ -5,22 +5,22 @@
 CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
 CLOUDPC_RUN_DIR="${CLOUDPC_RUN_DIR:-/run/cloudpc}"
 
-_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+_timestamp() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 
-log()  { printf '%s [cloud-pc] %s\n' "$(_ts)" "$*"; }
-warn() { printf '%s [cloud-pc] WARNING: %s\n' "$(_ts)" "$*" >&2; }
-err()  { printf '%s [cloud-pc] ERROR: %s\n' "$(_ts)" "$*" >&2; }
+log()  { printf '%s [cloud-pc] %s\n' "$(_timestamp)" "$*"; }
+warn() { printf '%s [cloud-pc] WARNING: %s\n' "$(_timestamp)" "$*" >&2; }
+err()  { printf '%s [cloud-pc] ERROR: %s\n' "$(_timestamp)" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
-# banner <line>...  -- prints a framed block, used for the credential notice.
+# banner <line>...  -- framed block, used for the startup notice.
 banner() {
-    local line width=74
+    local line
     printf '\n'
-    printf '%s\n' "$(printf '=%.0s' $(seq 1 "$width"))"
+    printf '%s\n' "$(printf '=%.0s' $(seq 1 74))"
     for line in "$@"; do
         printf '  %s\n' "$line"
     done
-    printf '%s\n\n' "$(printf '=%.0s' $(seq 1 "$width"))"
+    printf '%s\n\n' "$(printf '=%.0s' $(seq 1 74))"
 }
 
 # is_true <value> -- lenient boolean parsing for environment variables.
@@ -31,15 +31,11 @@ is_true() {
     esac
 }
 
-# port_listening <port> -- returns 0 when something LISTENs on that TCP port,
-# on any address family.
+# port_listening <port> -- true when a TCP port is in LISTEN state, IPv4 or IPv6.
 #
-# This reads /proc instead of opening a connection, which matters:
-#   * probing xrdp with a bare TCP connect makes it log a failed RDP handshake
-#     every single time, which would bury real errors in the deploy logs;
-#   * xrdp binds the session manager's "127.0.0.1" to ::1 on dual stack hosts,
-#     so an IPv4-only connect probe reports a false outage (and would make the
-#     watchdog restart a perfectly healthy service).
+# /proc is read instead of opening a socket on purpose: a bare TCP connect to
+# the VNC server shows up as a failed authentication in its log, and probing
+# from the wrong address family would report a false outage.
 port_listening() {
     local hex
     local files=()
@@ -53,23 +49,23 @@ port_listening() {
     ' "${files[@]}" 2>/dev/null
 }
 
-# http_ok <port> [path] -- returns 0 on a 2xx from the local status server.
+# http_ok <port> [path] -- true on a 2xx/3xx answer from the local gateway.
 http_ok() {
     local port="$1" path="${2:-/health}"
     python3 -c '
 import sys, urllib.request
 url = "http://127.0.0.1:%s%s" % (sys.argv[1], sys.argv[2])
+request = urllib.request.Request(url, headers={"User-Agent": "cloudpc-health"})
 try:
-    with urllib.request.urlopen(url, timeout=5) as response:
-        sys.exit(0 if 200 <= response.status < 300 else 1)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        sys.exit(0 if 200 <= response.status < 400 else 1)
 except Exception:
     sys.exit(1)
 ' "${port}" "${path}" 2>/dev/null
 }
 
-# render_template <src> <dst> -- substitutes @@KEY@@ placeholders from the
-# exported environment. Keys are discovered from the template itself, so the
-# caller only has to export the matching variables.
+# render_template <src> <dst> -- substitute @@KEY@@ placeholders from the
+# exported environment. Missing keys are a hard error.
 render_template() {
     local src="$1" dst="$2"
     [ -r "$src" ] || die "template not found: ${src}"
@@ -79,13 +75,13 @@ import re
 import sys
 
 src, dst = sys.argv[1], sys.argv[2]
-with open(src, "r", encoding="utf-8") as fh:
-    body = fh.read()
+with open(src, "r", encoding="utf-8") as handle:
+    body = handle.read()
 
 missing = []
 
 
-def repl(match):
+def replace(match):
     key = match.group(1)
     value = os.environ.get(key)
     if value is None:
@@ -94,14 +90,14 @@ def repl(match):
     return value
 
 
-body = re.sub(r"@@([A-Z0-9_]+)@@", repl, body)
+body = re.sub(r"@@([A-Z0-9_]+)@@", replace, body)
 if missing:
     sys.stderr.write("missing template variables: %s\n" % ", ".join(sorted(set(missing))))
     sys.exit(1)
 
 tmp = dst + ".tmp"
-with open(tmp, "w", encoding="utf-8") as fh:
-    fh.write(body)
+with open(tmp, "w", encoding="utf-8") as handle:
+    handle.write(body)
 os.replace(tmp, dst)
 PY
 }

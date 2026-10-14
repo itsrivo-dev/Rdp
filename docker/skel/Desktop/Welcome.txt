@@ -1,40 +1,56 @@
 Ubuntu Cloud PC - quick reference
 =================================
 
-You are on a real Ubuntu 22.04 LTS desktop (XFCE) running in a container.
+You are on a real Ubuntu 22.04 LTS desktop (XFCE4) that lives in a container and
+is streamed into your browser. There is nothing to install on the device you are
+reading this on.
+
+Where am I?
+-----------
+  * The desktop you see is a TigerVNC display. Only the web gateway can reach
+    it, it is never exposed to the internet directly.
+  * Closing the browser tab does NOT end the session: the desktop keeps running
+    with all windows open. Reopen the URL and sign in again to continue.
+  * You can connect from several devices at once (for example a phone and a
+    tablet) - they all show the same desktop.
 
 What is installed
 -----------------
-  Terminal .......... xfce4-terminal        (Applications > Terminal Emulator)
-  File manager ...... Thunar                (Applications > File Manager)
-  Browser ........... Firefox
-  Code editor ....... Geany
-  Languages ......... python3 + pip, node + npm, git
-  Utilities ......... curl, wget, jq, htop, zip/unzip, rsync, ssh client, tree
+  Terminal ......... xfce4-terminal     (also: Ctrl+Alt+T)
+  File manager ..... Thunar             (also: Ctrl+Alt+F)
+  Text editor ...... Mousepad           (also: Ctrl+Alt+E)
+  Image viewer ..... Ristretto
+  Task manager ..... xfce4-taskmanager
+  Screenshot ....... xfce4-screenshooter  (also: the Print key)
+  Browser .......... Firefox (when the image was built with INSTALL_BROWSER=true)
+  Utilities ........ python3, git, curl, wget, jq, htop, tree, zip/unzip, rsync,
+                     ssh client, vi/nano, less
 
-Your files
-----------
-  If a Railway Volume is attached, your home directory lives on it and
-  survives restarts and redeploys. Run `cloudpc-status` in a terminal to see
-  whether storage is persistent or ephemeral.
-
-  Anything installed with `sudo apt install` goes into the container
-  filesystem, NOT the volume, so it disappears on the next deploy. Keep a
-  setup script in your home directory if you need extra packages.
-
-Staying connected
+Files and storage
 -----------------
-  Closing the Remote Desktop app does not close this session - reconnect with
-  the same user, password and screen size and you are back where you were.
-  The session only ends if you log out, or if Railway stops or replaces the
-  container.
+  Run `cloudpc-status` in a terminal to see whether a persistent volume is
+  attached. If it is, your home directory lives on it and survives restarts and
+  redeploys. If it is not, everything in the container is lost when Railway
+  restarts or replaces this deployment.
 
-  Tip: set a fixed resolution in your Android RDP client (and lock the screen
-  rotation). xrdp keys sessions by screen size, so connecting with a different
-  size starts a second, empty desktop instead of resuming this one.
+  Note that programs you install with `sudo apt install ...` go into the
+  container filesystem, not the volume, so they disappear on the next deploy.
+  Keep a setup script in your home directory if you need extra packages.
+
+Mobile tips
+-----------
+  * Rotate to landscape: the desktop is 16:9, so landscape uses far more of the
+    screen.
+  * Pinch to zoom, and drag with two fingers to pan while zoomed.
+  * The noVNC control bar (the arrow on the left edge, or the button that
+    appears on mobile) has: on-screen keyboard, extra keys (Ctrl/Alt/Tab/Esc),
+    clipboard sync, scaling mode and connection quality.
+  * In Settings > Scaling mode, "Remote resizing" makes the desktop match the
+    size of your browser window instead of being scaled down.
 
 Admin
 -----
-  sudo ............... your desktop password
-  cloudpc-status ..... services, sessions, storage
-  sudo cloudpc-credentials ... show the current connection details
+  sudo ................ your desktop password
+  cloudpc-status ...... services, desktop state, storage, URL
+  cloudpc-password .... show or change the login password (with sudo)
+  railway logs ........ the startup banner with the URL and username

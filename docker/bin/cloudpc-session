@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  cloudpc-session - starts the XFCE desktop on the VNC display.
+#
+#  Supervisord runs this as the desktop user, right after the VNC program. It
+#  waits for the X socket, prepares the session environment, then hands the
+#  display to xfce4-session. Everything the user starts lives inside this
+#  session, and the session survives browser disconnects: it is only torn down
+#  when the desktop is logged out or the container stops.
+# =============================================================================
+set -Eeuo pipefail
+
+CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
+# shellcheck source=../lib/common.sh
+. "${CLOUDPC_ROOT}/lib/common.sh"
+
+DISPLAY_NUM="${DESKTOP_DISPLAY:-1}"
+export DISPLAY=":${DISPLAY_NUM}"
+export XAUTHORITY="${HOME}/.Xauthority"
+
+[ -f "${XAUTHORITY}" ] || { umask 077; : > "${XAUTHORITY}"; }
+
+# Wait for the VNC program to create the display (Xtigervnc needs a moment even
+# on a fast machine, and it may be restarting after a crash).
+for _ in $(seq 1 120); do
+    if [ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+        break
+    fi
+    sleep 0.5
+done
+if [ ! -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+    die "display :${DISPLAY_NUM} never appeared (is the vnc program running?)"
+fi
+
+# --- session environment -----------------------------------------------------
+export XDG_SESSION_TYPE=x11
+export XDG_SESSION_DESKTOP=xfce
+export XDG_CURRENT_DESKTOP=XFCE
+export DESKTOP_SESSION=xfce
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HOME}/.cache}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-${HOME}/.local/state}"
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
+# No GPU in a container, and no accessibility bus needed for a single user.
+export LIBGL_ALWAYS_SOFTWARE=1
+export NO_AT_BRIDGE=1
+export GTK_OVERLAY_SCROLLING=1
+export MOZ_ENABLE_WAYLAND=0
+
+# The desktop password is used by sudo inside the terminal; libsecret/gnome-keyring
+# are not installed, so keep applications from waiting on a keyring prompt.
+export SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-/dev/null}"
+
+mkdir -p "${XDG_RUNTIME_DIR}" "${XDG_CONFIG_HOME}" "${XDG_DATA_HOME}" "${XDG_CACHE_HOME}"
+chmod 700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+
+# No screen blanking, no DPMS: a black "screensaver" cannot be woken up from a
+# browser VNC session without confusion.
+xset s off 2>/dev/null || true
+xset s noblank 2>/dev/null || true
+xset -dpms 2>/dev/null || true
+
+# Standard XDG user directories (Desktop, Documents, Downloads, ...)
+command -v xdg-user-dirs-update >/dev/null 2>&1 && xdg-user-dirs-update >/dev/null 2>&1 || true
+
+log "starting XFCE session for $(id -un) on :${DISPLAY_NUM}"
+
+# dbus-run-session gives XFCE a private session bus that lives exactly as long
+# as the session itself.
+exec dbus-run-session -- xfce4-session

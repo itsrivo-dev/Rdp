@@ -1,39 +1,50 @@
-# Ubuntu Cloud PC
+# Ubuntu Cloud PC — a full Ubuntu 22.04 + XFCE4 desktop in your browser
 
-A real Ubuntu 22.04 LTS desktop (XFCE) running on [Railway](https://railway.com),
-reachable from any Remote Desktop client - including Android phones.
-
-Not a web terminal, not a simulated desktop, not a screenshot service: the
-container runs a genuine X session with `xrdp`, a window manager, a file
-manager, a browser and a full package manager. You connect to it with the RDP
-protocol and use it like a PC.
+A real Ubuntu 22.04 LTS "Jammy" desktop with XFCE4, streamed to a normal web
+browser. No VNC client, no RDP client, no SSH, no local setup: deploy this
+repository to [Railway](https://railway.com), open the HTTPS URL it gives you
+in Chrome on your Android phone, sign in, and you are on a Linux desktop with a
+terminal, a file manager, a panel and an application menu.
 
 ```
-Android RDP app  ──TLS/RDP──▶  Railway TCP proxy  ──▶  xrdp (3389)
-                                                        │
-                                                        ▼
-                                              xrdp-sesman ─▶ Xvnc + XFCE session
-                                                        │
-                                              /data (Railway volume) = your home
+Your phone (Chrome)                     Railway container (Ubuntu 22.04)
+┌──────────────────────┐                ┌──────────────────────────────────────┐
+│ https://<svc>.up.…   │  HTTPS + WSS   │  web gateway  (python3, port $PORT)  │
+│  login page          │ ─────────────► │   ├── login (scrypt + signed cookie) │
+│  noVNC 1.7.0 (ESM)   │                │   ├── noVNC assets  /vnc/            │
+│  on-screen keyboard  │ ◄───────────── │   └── /websockify ──┐               │
+│  pinch / pan / zoom  │   framebuffer  │                     │ 127.0.0.1:5900 │
+└──────────────────────┘                │  TigerVNC (Xtigervnc) ◄──┘           │
+                                        │      └── XFCE4 session (:1)          │
+                                        │           ├── xfwm4 + xfce4-panel    │
+                                        │           ├── xfce4-terminal         │
+                                        │           └── Thunar, Firefox, …     │
+                                        └──────────────────────────────────────┘
 ```
+
+Everything in this repository is implemented and tested: the Dockerfile, the
+startup scripts, the XFCE configuration, the login page and the WebSocket/VNC
+gateway. There are no placeholders, no mock screenshots and no fake terminal.
 
 ---
 
 ## Contents
 
 - [What you get](#what-you-get)
-- [Deploy it](#deploy-it)
-- [Connect from Android](#connect-from-android)
-- [Credentials](#credentials)
-- [Persistent storage](#persistent-storage)
-- [Keeping the desktop alive](#keeping-the-desktop-alive)
-- [Configuration](#configuration)
-- [Security](#security)
-- [Railway limits and the manual steps you cannot avoid](#railway-limits-and-the-manual-steps-you-cannot-avoid)
+- [Deploy to Railway from GitHub](#deploy-to-railway-from-github)
+- [Signing in](#signing-in)
+- [Environment variables](#environment-variables)
+- [Changing the password](#changing-the-password)
+- [Persistent storage — what survives what](#persistent-storage--what-survives-what)
+- [Using it on a phone or tablet](#using-it-on-a-phone-or-tablet)
+- [Resource use and tuning](#resource-use-and-tuning)
+- [Local development and testing](#local-development-and-testing)
+- [Security model](#security-model)
 - [How it works](#how-it-works)
-- [Testing](#testing)
+- [Limitations — read this before you rely on it](#limitations--read-this-before-you-rely-on-it)
 - [Troubleshooting](#troubleshooting)
-- [What has been verified](#what-has-been-verified)
+- [Repository layout](#repository-layout)
+- [Licences and credits](#licences-and-credits)
 
 ---
 
@@ -41,446 +52,465 @@ Android RDP app  ──TLS/RDP──▶  Railway TCP proxy  ──▶  xrdp (338
 
 | | |
 | --- | --- |
-| OS | Ubuntu 22.04 LTS |
-| Desktop | XFCE 4 (panel, window manager, desktop, app finder, task manager) |
-| Remote access | xrdp over TLS, driving a TigerVNC X server |
-| File manager | Thunar (+ archive plugin, xarchiver, thumbnails) |
-| Terminal | xfce4-terminal |
-| Browser | Firefox (official Mozilla build, not the snap stub) |
-| Editors | Geany (lightweight graphical IDE), Mousepad |
-| Languages | Python 3 + pip + venv, Node.js 22 LTS + npm, Git |
-| Utilities | curl, wget, jq, htop, tree, zip/unzip, rsync, ssh client, nano, vim-tiny, xdotool |
-| Viewer | Ristretto (images) |
-| Admin tools | `cloudpc-status`, `cloudpc-health`, `cloudpc-credentials` |
-
-Everything is installed with `--no-install-recommends` and without docs/man
-pages. No audio stack, no snapd, no systemd, no desktop search indexer.
-
-| Measured in CI | |
-| --- | --- |
-| Image size | ~1.1 GB |
-| Memory, idle (booted, nobody connected) | ~40 MB |
-| Memory, desktop session + terminal + file manager + editor + Firefox | ~550 MB |
-
-Those numbers come from the test suite, which fails the build if the idle
-footprint goes over 512 MB or the busy one over 1.5 GB. A 1 GB Railway
-instance is enough for everyday use; 2 GB is comfortable with several browser
-tabs.
+| Operating system | Ubuntu 22.04 LTS (Jammy) |
+| Desktop | XFCE4 — `xfwm4`, `xfce4-panel`, `xfdesktop`, `xfsettingsd`, application menu, task list, clock |
+| Terminal | `xfce4-terminal` (also `Ctrl+Alt+T`) |
+| File manager | Thunar, with archive support and thumbnails |
+| Editor / viewer | Mousepad, Ristretto, `nano`/`vim` |
+| Browser | Firefox from Mozilla's APT repository (build arg `INSTALL_BROWSER=false` skips it) |
+| Tooling | `python3`, `git`, `curl`, `wget`, `jq`, `htop`, `tree`, `zip`/`unzip`, `rsync`, `ssh` client |
+| Remote protocol | TigerVNC (`Xtigervnc`) on `127.0.0.1:5900`, reached only through the gateway |
+| Browser client | noVNC 1.7.0, served as ES modules, patched to auto-connect |
+| Access control | login page, scrypt-hashed password, HMAC-signed session cookie, login throttling |
+| Health | `GET /health` (JSON) for Railway, plus a watchdog with capped restarts |
 
 ---
 
-## Deploy it
+## Deploy to Railway from GitHub
 
-You need a Railway account with an active plan (Railway's free trial works;
-see [limits](#railway-limits-and-the-manual-steps-you-cannot-avoid)).
+Railway builds the `Dockerfile` in this repository. You need a Railway account
+and this repository on GitHub (fork it, or use the original).
 
-> **Which branch does Railway build?** Railway deploys one branch of the
-> connected repository - `main` by default, both in the dashboard and in
-> [`.railway/railway.ts`](.railway/railway.ts). If this code is sitting on a
-> feature branch, either merge it into `main` first, or pick that branch in
-> *Service → Settings → Source → Branch*, or run the setup script with
-> `CLOUD_PC_BRANCH=<your-branch> ./scripts/railway-setup.sh`.
+### 1. Create the service
 
-### Option A - one command (recommended, creates everything)
+1. Railway dashboard → **New Project** → **Deploy from GitHub repo**.
+2. Pick this repository and, if asked, the branch (`main`).
+3. Railway detects `Dockerfile` and starts building. The first build takes a
+   while (it installs XFCE, TigerVNC and Firefox — roughly 8–15 minutes on
+   Railway's builders) and later builds are cached.
+
+### 2. Add a volume (recommended, one minute)
+
+Service → **Settings** → **Volumes** → **Add volume**, mount path **`/data`**.
+
+The entrypoint detects the mount automatically: your home directory, the
+generated password and the session signing key move to `/data` and survive
+restarts and redeploys. Without a volume the container still works, but
+everything is lost whenever Railway restarts or replaces it.
+
+### 3. Generate the public HTTPS domain
+
+Service → **Settings** → **Networking** → **Generate Domain**, or:
 
 ```bash
-git clone https://github.com/itsrivo-dev/Rdp.git
-cd Rdp
-./scripts/railway-setup.sh
+railway domain            # prints e.g. https://rdp-production-1a2b.up.railway.app
 ```
 
-The script installs the Railway CLI if needed, logs you in, links or creates a
-project, and then applies [`.railway/railway.ts`](.railway/railway.ts), which
-declares:
+Railway terminates TLS in front of the container and forwards `PORT` to it. The
+gateway listens on that port (default `8080`) and accepts both `http://` inside
+the container and the proxy's `X-Forwarded-Proto: https`.
 
-* the service, built from this repository's `Dockerfile`
-* a **5 GB volume mounted at `/data`** (your home directory)
-* a **TCP proxy for port 3389** - the public RDP endpoint
-* the `/health` healthcheck and an `ALWAYS` restart policy
-* `PORT=8080` so Railway knows which port serves HTTP
+### 4. Open it and sign in
 
-It then prints where to find your connection details. No file in this
-repository needs to be edited, and no secret is ever written to disk.
+Open the domain in Chrome. You will get the sign-in page; the credentials are
+in the deploy logs (see below).
 
-### Option B - the Railway dashboard
+**Nothing else is required.** No CLI, no SSH, no variables, no second port. If
+you would rather drive it from a terminal, `./scripts/railway-setup.sh` and
+`.railway/railway.ts` (Railway Infrastructure as Code) automate steps 1–3.
 
-1. **New Project → Deploy from GitHub repo →** pick this repository.
-   Railway detects the `Dockerfile` and builds it. No build settings needed.
-2. **Service → Settings → Networking → TCP Proxy →** enter port **3389**.
-   Railway returns something like `shuttle.proxy.rlwy.net:21043`. *This is the
-   address you put in your Android client.*
-3. **Service → Variables → (right-click canvas) → Volume →** attach a volume
-   to the service with mount path **`/data`**.
-   Skip this and the desktop still works, but **everything you save is lost on
-   the next deploy** - the container will say so loudly in the logs.
-4. Open the **Deploy Logs** and copy the username and password from the banner.
+### Do I need to set any variables?
 
-Steps 2 and 3 are clicks in the dashboard because Railway creates proxies and
-volumes at the *account* level - a file in a GitHub repository cannot do it.
-Option A does both for you through the CLI.
-
-> **Note on `railway.json`:** this repository deliberately does not ship one.
-> Railway deprecated Config as Code, new services cannot opt into it, and the
-> remaining files stop being read on 2026-12-01. `.railway/railway.ts`
-> (Infrastructure as Code) is the supported replacement and is what Option A
-> uses.
+No. Every variable has a working default; the password is generated on first
+boot. Variables are only for choosing your own password, resolution, timezone,
+or to stop the password from appearing in the logs.
 
 ---
 
-## Connect from Android
+## Signing in
 
-The server speaks standard RDP with TLS and is driven in CI by a real
-`xfreerdp` client, so any Android client that supports TLS and a custom port
-should work: Microsoft's **Windows App** (formerly *Microsoft Remote
-Desktop*), **aFreeRDP**, **RD Client** forks, **Jump Desktop** and so on. The
-steps below use Microsoft's client because it is the one most people have.
-
-> The author has **not** connected to a deployed instance from a physical
-> Android device - see [what has been verified](#what-has-been-verified).
-
-**Microsoft "Windows App" / "Remote Desktop" (Android)**
-
-1. **+ → Add PC**
-2. **PC name**: `shuttle.proxy.rlwy.net:21043` - the host **and** port from the
-   Railway TCP proxy (your values will differ; the port is never 3389).
-3. **User account → Add user account**
-   * Username: `ubuntu`
-   * Password: the password from the deploy logs
-4. **Display → Resolution**: pick a **fixed** resolution, e.g. `1280x720` or
-   `1600x900`, and turn off "Change the display resolution automatically".
-   This matters - see below.
-5. Save, tap the PC, accept the self-signed certificate warning once.
-
-You get the XFCE desktop. The first connection takes a few seconds longer
-because the X server and session are created on demand.
-
-### Why you should pin the resolution
-
-xrdp keys a session by *user + colour depth + screen size*. Reconnecting with a
-different screen size (for example after rotating the phone) starts a **second,
-empty desktop** instead of resuming the first one. Pinning the resolution in
-the client - and locking rotation - means every reconnect lands back in the
-same session with your windows where you left them.
-
-If you do end up with a stray session, log out of it from the XFCE menu, or
-restart the service.
-
-### Clipboard
-
-Text copy/paste between the phone and the desktop is enabled (`cliprdr`).
-Drive redirection and audio are intentionally off: both need container
-capabilities Railway does not grant (`/dev/fuse`) or a sound daemon that would
-only burn CPU.
-
----
-
-## Credentials
-
-* **Nothing is hardcoded and nothing is stored in Git.**
-* On first boot the container generates a password with `secrets.choice` from
-  a 31-character unambiguous alphabet, in 4 groups of 5 (about 99 bits of
-  entropy, still typeable on a phone): `k7fm2-pqw9x-3tdhv-rn8cz`.
-* It is printed **once per start** in a banner in the Railway **deploy logs**,
-  which are private to your project:
-
-  ```
-  ==========================================================================
-    UBUNTU CLOUD PC - REMOTE DESKTOP READY
-
-      RDP address : shuttle.proxy.rlwy.net:21043
-      Username    : ubuntu
-      Password    : k7fm2-pqw9x-3tdhv-rn8cz
-      Source      : generated at startup
-      Storage     : persistent volume at /data (4.8G free)
-  ==========================================================================
-  ```
-
-  From a terminal: `railway logs | grep -A6 "REMOTE DESKTOP READY"`.
-
-* With a volume attached the password is stored at
-  `/data/.secrets/rdp_password` (`root`, mode `0600`) and **stays the same**
-  across restarts and redeploys. Without a volume a new one is generated on
-  every start.
-* To choose your own, set an `RDP_PASSWORD` variable on the service. It is then
-  never written to disk and never printed.
-* To rotate the generated one: delete `/data/.secrets/rdp_password`
-  (`railway volume files` or a terminal inside the desktop with `sudo`) and
-  redeploy.
-
-### Retrieving them later
-
-| Where | How |
-| --- | --- |
-| Railway logs | `railway logs` - printed on every start |
-| Inside the container | `sudo cloudpc-credentials` (root-only; `railway ssh` or a desktop terminal) |
-| Over HTTP | `GET /admin` with HTTP Basic auth as the desktop user |
-
-The `/admin` endpoint returns the connection address, session list, storage
-state and recent service logs. It **does not** return the password: the
-HTTP server runs as an unprivileged user that never reads the password file.
-It authenticates you against a scrypt hash published by the entrypoint, and
-locks an address out for 5 minutes after 8 failed attempts.
-
-The public pages (`/` and `/health`) never contain credentials.
-
----
-
-## Persistent storage
-
-| With a Railway volume at `/data` | Without |
-| --- | --- |
-| Home directory is `/data/home/ubuntu` | Home directory is `/home/ubuntu` |
-| Files, desktop settings, browser profile, SSH keys survive restarts, redeploys and crashes | Everything is **lost** when the container is replaced |
-| The RDP password and the TLS certificate are stable | Both are regenerated on every start |
-
-The container detects the volume automatically from Railway's
-`RAILWAY_VOLUME_MOUNT_PATH` variable (and falls back to checking whether
-`/data` is a real mount point), moves the user's home directory onto it, seeds
-the XFCE profile on first boot and repairs ownership on later boots.
-
-If there is no volume you get this in the logs, and `/health` reports
-`"persistent": false`:
+The deploy log contains a framed block on every start:
 
 ```
-WARNING: No persistent volume detected at /data.
-WARNING: Files in the desktop home directory live in the container filesystem and
-WARNING: WILL BE LOST whenever Railway restarts, redeploys or moves this container.
+==========================================================================
+  UBUNTU CLOUD PC IS READY - open this in Chrome
+
+  Desktop URL : https://<your-service>.up.railway.app/
+  Username    : ubuntu
+  Password    : abcde-fghij-klmno-pqrst   (generated at first boot)
+  Storage     : persistent volume at /data (5.0G free)
+
+  The VNC server listens on 127.0.0.1 only. The browser login above is
+  the only way in, and the session cookie is signed and HttpOnly.
+  ...
+==========================================================================
 ```
 
-**What a volume does not cover:** packages you install with `apt` land in the
-container filesystem, not on the volume, so they disappear on the next deploy.
-Keep a small setup script in your home directory, or add the packages to the
-`Dockerfile` and redeploy. Docker's writable layer is *not* storage - treat
-everything outside `/data` as disposable.
+- Railway dashboard: service → **Deployments** → latest → **View Logs**.
+- CLI: `railway logs | grep -A8 "UBUNTU CLOUD PC IS READY"`.
+- The generated password is 20 characters in four groups of five, from an
+  alphabet without `l`, `i`, `o`, `0` and `1` — about 99 bits of entropy and
+  still typeable on a phone.
+- Sessions last 7 days (`SESSION_TTL_HOURS`) and the cookie is
+  `HttpOnly; SameSite=Lax; Secure` (Secure automatically behind HTTPS).
+- **The deploy logs are private to your Railway project.** If you would rather
+  no password ever passes through them, set `DESKTOP_PASSWORD` (choose your own)
+  and `DESKTOP_PASSWORD_PRINT=false` — both are described below.
 
 ---
 
-## Keeping the desktop alive
+## Environment variables
 
-* Disconnecting the RDP client does **not** end the session.
-  `KillDisconnected=false`, `DisconnectedTimeLimit=0` and `IdleTimeLimit=0`
-  are set in `sesman.ini`: your windows, editors and long-running jobs keep
-  running, and reconnecting resumes exactly where you were.
-* The session ends when you log out of XFCE, when the service is restarted, or
-  when Railway stops/replaces/redeploys the container - a new deploy always
-  starts a fresh container, and anything running inside the old one stops.
-* Railway may also stop a service for reasons outside this project: usage
-  limits, billing state, resource limits or platform maintenance. Nothing here
-  tries to work around those, and you should not try either.
-* If a *service* inside the container dies (xrdp, sesman, the status server),
-  the built-in watchdog restarts it within ~60 s without touching your desktop
-  session. If the container itself exits, Railway's `ALWAYS` restart policy
-  brings it back.
-
----
-
-## Configuration
-
-Every setting has a working default; **none of these variables is required**.
+All of them are optional. Set them in the Railway dashboard under service →
+**Variables** (a redeploy applies them), or pass `-e NAME=value` to `docker run`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RDP_PASSWORD` | *(generated)* | Use your own password instead of a generated one |
-| `RDP_USERNAME` | `ubuntu` | Desktop account name |
-| `PORT` | `8080` | HTTP status/health port (Railway sets this itself) |
-| `RDP_PORT` | `3389` | Internal RDP port (must match the TCP proxy) |
-| `RDP_MAX_SESSIONS` | `4` | Concurrent desktop sessions allowed |
-| `RDP_MAX_BPP` | `24` | Colour depth ceiling (`16` is noticeably lighter on mobile data) |
-| `RDP_DPI` | `96` | X server DPI |
-| `RDP_SUDO_NOPASSWD` | `false` | Set `true` for passwordless `sudo` |
-| `CLOUDPC_DATA_DIR` | `/data` | Where the volume is expected |
-| `CLOUDPC_WATCHDOG_INTERVAL` | `30` | Seconds between service probes |
-| `TZ` | `UTC` | Container timezone |
-
-Railway-provided variables used automatically when present:
-`RAILWAY_VOLUME_MOUNT_PATH`, `RAILWAY_TCP_PROXY_DOMAIN`,
-`RAILWAY_TCP_PROXY_PORT`, `RAILWAY_PUBLIC_DOMAIN`, `RAILWAY_SERVICE_NAME`,
-`RAILWAY_ENVIRONMENT_NAME`, `RAILWAY_REPLICA_REGION`, `PORT`.
-
----
-
-## Security
-
-* **No unauthenticated RDP.** xrdp authenticates against PAM (the real Linux
-  account) and `sesman.ini` sets `AlwaysGroupCheck=true` with
-  `TerminalServerUsers=tsusers`, so only members of that group can open a
-  session. Root login over RDP is disabled.
-* **TLS.** `security_layer=negotiate` + `crypt_level=high`, TLS 1.2/1.3 only,
-  `HIGH` ciphers, with a self-signed certificate generated at first boot and
-  kept on the volume so the fingerprint stays stable. Android clients will warn
-  once about the self-signed certificate - that is expected; the traffic is
-  still encrypted end to end.
-* **Two ports, both needed.** 3389 (RDP) and 8080 (status/health). The session
-  manager (3350) and the per-session X servers (5910+) are bound to
-  `127.0.0.1` and are not reachable from outside. The test suite asserts this.
-* **Least privilege.** The desktop runs as the unprivileged `ubuntu` user; the
-  HTTP server runs as a separate unprivileged `cloudpc` user with no shell and
-  no access to the password; only `xrdp-sesman` (which has to create sessions)
-  runs as root. `sudo` requires the password unless you opt out.
-* **Rate limiting.** `MaxLoginRetry=3` on RDP, 8-attempts-per-5-minutes lockout
-  on `/admin`.
-* **No secrets in Git.** `.gitignore` covers keys, certificates, `.env` files,
-  credential dumps, test output and local runtime data. The lint suite fails
-  the build if a credential-shaped literal appears in the sources.
-* Treat your Railway deploy logs as sensitive - they contain the password.
+| `PORT` | `8080` | Injected by Railway. The gateway listens here; it is the only public port. |
+| `DESKTOP_PASSWORD` | *(generated)* | Set your own login password. Leave empty to let the container generate and store one. |
+| `DESKTOP_PASSWORD_PRINT` | `true` | `false` keeps the password out of the deploy logs (use with `DESKTOP_PASSWORD`). |
+| `DESKTOP_USER` | `ubuntu` | Desktop account name. |
+| `DESKTOP_RESOLUTION` | `1280x720` | Virtual screen size, e.g. `1600x900`, `1920x1080`. Must match what you want; VNC cannot resize a running session. |
+| `DESKTOP_DEPTH` | `24` | Colour depth. `24` is right; lower it only to save bandwidth. |
+| `VNC_FRAME_RATE` | `30` | Maximum updates/second sent to the client. `20` is smoother on a slow phone link; `60` needs more CPU. |
+| `SESSION_TTL_HOURS` | `168` | How long a browser stays signed in (7 days). |
+| `TZ` | `UTC` | Container and desktop timezone, e.g. `Asia/Dhaka`. |
+| `DESKTOP_SUDO_NOPASSWD` | `false` | `true` gives the desktop user passwordless `sudo` (convenient, weaker). |
+| `VNC_PORT` | `5900` | Loopback VNC port. Only change it if something else uses 5900. |
+| `DESKTOP_DISPLAY` | `1` | X display number (`:1`). |
+| `DESKTOP_NAME` | `Ubuntu Cloud Desktop` | Name shown by the VNC server. |
+| `CLOUDPC_WATCHDOG_INTERVAL` | `30` | Seconds between watchdog probes. |
+| `CLOUDPC_WATCHDOG_MAX_RESTARTS` | `3` | Restart attempts per service before the watchdog gives up and logs an error instead of looping. |
+| `CLOUDPC_DATA_DIR` | `/data` | Fallback path when `RAILWAY_VOLUME_MOUNT_PATH` is not set. |
 
 ---
 
-## Railway limits and the manual steps you cannot avoid
+## Changing the password
 
-Honest list, no hand-waving:
+Three ways, all of them valid:
 
-1. **A Railway TCP Proxy must exist for port 3389.** Proxies are account-level
-   resources; a repository cannot create one by itself. Use
-   `./scripts/railway-setup.sh` / `railway config apply` (CLI, one command) or
-   three clicks in the dashboard. Everything after that is automatic.
-2. **A volume must be created and mounted at `/data`** for persistence, for the
-   same reason. Same two options. Without it the deployment still works, with
-   loud warnings.
-3. **Railway requires a paid or trial plan.** Deployments stop when credits run
-   out; the desktop stops with them.
-4. **Deploys replace containers.** Any process you left running dies with the
-   old container. That is how the platform works, by design.
-5. **Volumes cannot be attached to more than one service**, and redeploys of a
-   service with a volume have a short downtime (Railway prevents two
-   deployments from mounting the same volume).
-6. **No GPU, no `/dev/fuse`, no privileged capabilities.** Rendering is
-   software (llvmpipe); 3D-heavy apps and video editing will be slow. Drive
-   redirection is therefore disabled.
-7. **`railway.json` is not used** - deprecated by Railway, ignored for new
-   services, hard cutoff 2026-12-01. Service settings come from
-   `.railway/railway.ts` (CLI) or from the dashboard.
-8. **Resolution changes create a second session** (xrdp 0.9.x behaviour with
-   the Xvnc backend). Pin the resolution in your client.
+**1. Railway variable (recommended — survives everything).**
+Set `DESKTOP_PASSWORD` to your new password and set
+`DESKTOP_PASSWORD_PRINT=false`, then redeploy. The container applies it on every
+start, so it can never drift. To go back to a generated password, delete the
+variable and run `cloudpc-password set` once (below).
+
+**2. From inside the desktop.**
+Open a terminal in the desktop and run:
+
+```bash
+sudo cloudpc-password set
+```
+
+It prompts for a new password (minimum 12 characters), updates the login, the
+`sudo` password and the VNC password, rotates the session signing key (every
+browser is signed out) and restarts the gateway. Other commands:
+
+```bash
+cloudpc-password show              # print the current password
+cloudpc-password status            # where the password comes from
+cloudpc-password rotate-sessions   # log out every browser, keep the password
+```
+
+**3. From your own machine with the Railway CLI.**
+
+```bash
+railway ssh                        # or: railway run bash
+cloudpc-password show
+cloudpc-password set 'my-new-password'
+```
+
+> The password lives on the volume at `/data/.secrets/desktop_password`
+> (mode `0600`, root) and is never written into the image or into a log file.
+> The gateway only ever sees a scrypt hash (`/run/cloudpc/auth.json`).
+
+---
+
+## Persistent storage — what survives what
+
+| Data | With a volume at `/data` | Without a volume |
+| --- | --- | --- |
+| Your home directory (`~/…`) | ✅ survives restarts and redeploys | ❌ lost on every restart/redeploy |
+| Desktop settings (`.config/xfce4`, panel, theme) | ✅ | ❌ |
+| The generated password | ✅ (so logins stay valid) | ❌ new password each start |
+| Browser sessions (session signing key) | ✅ (cookies stay valid) | ❌ signed out |
+| The VNC password | ✅ | ❌ |
+| Installed packages (`sudo apt install …`) | ❌ container filesystem | ❌ |
+| `/etc` changes, extra config | ❌ | ❌ |
+| Files outside `/data` (e.g. `/tmp`, `/opt`) | ❌ | ❌ |
+
+So: keep your work in your home directory, and keep a small setup script there
+if you need extra packages installed on every deploy. Everything else is
+rebuilt from the image on each deploy.
+
+Railway restarts, redeploys and (on some plans) sleeps replace or stop the
+container; the volume is what makes the desktop feel like *your* machine.
+
+---
+
+## Using it on a phone or tablet
+
+- Rotate to **landscape** — the desktop is 16:9 and uses far more of the screen.
+- **Pinch to zoom**, drag with **two fingers to pan** while zoomed.
+- The noVNC control bar (the arrow on the left edge, or the button that appears
+  on touch devices) gives you:
+  - an **on-screen keyboard** (the keyboard button),
+  - **extra keys** — `Ctrl`, `Alt`, `Super`, `Tab`, `Esc`, `Ctrl+Alt+Del`,
+  - **clipboard sync** in both directions (desktop ⇄ phone),
+  - **scaling mode** — *Local scaling* fits the desktop to your screen; *Remote
+    resizing* makes the remote screen match your browser window,
+  - **quality/compression** sliders for a slow mobile link.
+- **Add to home screen** in Chrome for a full-screen, app-like desktop (a web
+  app manifest and icons are included).
+- Zoom the whole page with Chrome's own zoom if the panel is still small: the
+  desktop scales to whatever space it has.
+- The desktop keeps running when you close the tab: reopen the URL, sign in
+  again (the cookie lasts 7 days by default) and everything is where you left it.
+
+---
+
+## Resource use and tuning
+
+The image is built to run in a small container (Railway's default is a fraction
+of a vCPU and a few hundred MB of RAM):
+
+- **XFCE without the heavy extras** — no power manager, no screensaver, no
+  compositing (`xfwm4` compositing is off), no desktop effects. One workspace.
+- **A flat background colour** instead of a photographic wallpaper: a full-screen
+  photo is re-sent every time the desktop repaints.
+- **TigerVNC tuned for a phone link** — `-localhost`, `-FrameRate 30`,
+  `-CompareFB 2` (skip unchanged pixels), RGB888 (no expensive colour
+  conversion), and no `-noreset`, so the desktop survives disconnects.
+- **noVNC defaults come from the gateway** — quality 6, compression 2, local
+  scaling, auto-reconnect, dot cursor on touch. The user can still change them
+  in the control bar.
+- **Static assets are served gzipped** with ETags; the noVNC bundle is ~2.9 MB
+  uncompressed and about a third of that over the wire.
+
+If the container feels slow: lower `DESKTOP_RESOLUTION` (e.g. `1024x600`),
+lower `VNC_FRAME_RATE` to `20`, and leave noVNC's compression high. Firefox is
+the heaviest thing in the image — rebuild with `--build-arg INSTALL_BROWSER=false`
+if you never use it.
+
+---
+
+## Local development and testing
+
+Docker is the only requirement to run the whole thing locally:
+
+```bash
+# build and run exactly what Railway builds
+docker build -t cloudpc:test .
+docker run --rm -p 8080:8080 -v cloudpc-data:/data cloudpc:test
+
+# open http://localhost:8080 and read the password from the container logs
+```
+
+Full test suite (static checks, unit tests, build, end-to-end):
+
+```bash
+scripts/test.sh                 # everything
+scripts/test.sh --fast          # static checks + unit tests only (no Docker)
+python3 -m unittest discover -s tests/unit -v
+pip install websocket-client pycryptodome Pillow   # for the desktop tests
+```
+
+What the end-to-end suite actually verifies (`tests/integration.sh`):
+
+- the gateway serves the login page, and **every** protected path is `401`
+  without a session (including `/websockify`);
+- a wrong password is rejected and issues no cookie; the right one signs in,
+  with a `HttpOnly`, `SameSite=Lax` cookie that becomes `Secure` when
+  `X-Forwarded-Proto: https` is present (the Railway proxy case);
+- repeated failures are rate limited to `429`;
+- `/vnc/` serves the patched noVNC page and its ES-module assets, gzipped, with
+  ETags, and path traversal is refused;
+- `tests/clients/rfb_probe.py` — an independent RFB client that plays the role of
+  a browser — completes the real handshake through the WebSocket bridge,
+  **authenticates with VNC auth**, then:
+  - captures a **screenshot of the real XFCE desktop** (written to
+    `test-results/desktop-1.png` as CI evidence),
+  - sends `Ctrl+Alt+T` and types a command, and the test then checks with
+    `docker exec` that the **file that command creates exists in the container**,
+  - compares before/after frames to prove the screen reacted to the input,
+  - reads the desktop clipboard through the RFB `ServerCutText` message;
+- `Xtigervnc`, `xfce4-session`, `xfwm4`, `xfce4-panel` and `xfdesktop` are
+  running, the X display really is `1280x720`, and Thunar/Terminal/Mousepad run;
+- the listening sockets are checked from `/proc`: **VNC on `127.0.0.1:5900`
+  only**, the gateway on `0.0.0.0:8080`;
+- no secret is stored in the runtime files or printed in the logs;
+- the desktop comes back on a **replacement container without any environment
+  variables**, with the same password and the files still there (and a clear
+  data-loss warning when no volume is attached).
+
+`.github/workflows/ci.yml` runs all of that on every push and pull request and
+uploads the logs plus the captured screenshots as artefacts.
+
+---
+
+## Security model
+
+- **The VNC server is never public.** It listens on `127.0.0.1:5900` inside the
+  container (`-localhost`) and still requires VNC authentication on top. The
+  Dockerfile exposes only the web port, and there is no second public endpoint
+  to forget about.
+- **Access requires the login.** The gateway mints a stateless, HMAC-SHA256
+  signed cookie (`HttpOnly`, `SameSite=Lax`, 7-day TTL) after checking the
+  password with **scrypt** (N=16384, r=8, p=1) against a hash; the plaintext
+  password is never held by the web process.
+- **Throttling.** Five failures per client address plus a global cap, in a
+  rolling window, with a lockout; failed attempts are delayed and logged
+  (without the attempted password).
+- **No secrets in logs or code.** The password is printed once at startup so you
+  can read it, and can be suppressed entirely (`DESKTOP_PASSWORD_PRINT=false`).
+  The repository contains no credentials; `.gitignore` covers `.env`, keys and
+  password files, and `tests/lint.sh` greps the sources for hardcoded secrets.
+- **HTTPS everywhere** — Railway terminates TLS in front of the container; the
+  container itself speaks plain HTTP on the private network, and the session
+  cookie is only marked `Secure` in that case.
+- **Least privilege.** The gateway runs as an unprivileged user that can read
+  the scrypt hash and the session key but never the plaintext password; the
+  desktop user `ubuntu` is a normal account with `sudo` (password required
+  unless you enable `DESKTOP_SUDO_NOPASSWD`).
+- **Anti-CSRF / origin checks** on the WebSocket upgrade, a hardened
+  `Content-Security-Policy` on the app pages, `X-Content-Type-Options`,
+  `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: no-referrer`, HSTS when the
+  request arrived over HTTPS, bounded request sizes and a hard socket cap.
+- **The supplied packages are verified.** noVNC's tarball is pinned by version
+  *and* sha256, and Mozilla's APT signing key fingerprint is checked during the
+  build; the build fails if either changes.
+
+What this is **not**: a hardened multi-tenant service. It is a single-user
+desktop with a password in front of it. Do not put secrets you cannot lose in
+it, and do not hand the URL to people you would not give a shell to — that is
+exactly what the desktop is.
 
 ---
 
 ## How it works
 
-```
-docker/
-├── entrypoint.sh              runs as root, PID 1 until it execs supervisord
-├── lib/common.sh              logging, template rendering, TCP probe helpers
-├── supervisor/supervisord.conf  service definitions, restart + shutdown policy
-├── xrdp/
-│   ├── xrdp.ini.tmpl          RDP listener: TLS, channels, autorun session
-│   ├── sesman.ini.tmpl        session manager: PAM, group check, persistence
-│   ├── startwm.sh             starts dbus + xfce4-session for a login
-│   └── reconnectwm.sh         runs on reconnect, never disturbs the session
-├── health/server.py           status page, /health, authenticated /admin
-├── bin/                       cloudpc-health, -watchdog, -credentials, -status
-└── skel/                      XFCE defaults seeded into a fresh home directory
-```
+**Start-up order** (supervisord, PID 1, `docker/supervisor/supervisord.conf`):
 
-**Boot sequence** (all automatic, no manual commands ever):
+1. `dbus` — the system bus XFCE and Thunar expect.
+2. `vnc` (`cloudpc-vnc`) — `Xtigervnc` on `:1`, bound to `127.0.0.1:5900`, with
+   `-noreset` so sessions survive browser disconnects.
+3. `session` (`cloudpc-session`) — waits for the X socket, sets up the session
+   environment (`XDG_*`, software GL, no screen blanking) and runs
+   `dbus-run-session -- xfce4-session`.
+4. `gateway` (`docker/gateway/server.py`) — login page, noVNC assets,
+   `/api/session`, `/health`, and the WebSocket ⇄ VNC bridge.
+5. `watchdog` — probes the three of them and restarts a dead service through
+   supervisord, with a cap (`CLOUDPC_WATCHDOG_MAX_RESTARTS`) so a broken image
+   reports itself instead of restarting forever.
 
-1. `entrypoint.sh` verifies it is root, prints the environment, applies `TZ`.
-2. Creates runtime directories (`/var/run/xrdp`, `/run/user/1000`,
-   `/tmp/.X11-unix`, `/run/dbus`), clears stale sockets and PID files, and
-   fixes permissions.
-3. Detects the volume, points the desktop user's home at it, seeds the XFCE
-   profile on first boot (including the panel layout, so XFCE never shows its
-   first-run dialog) and repairs ownership afterwards.
-4. Resolves the password (variable → volume → generate), sets it with
-   `chpasswd`, and publishes only a scrypt hash for the HTTP server.
-5. Generates the TLS certificate and xrdp RSA keys if they are missing.
-6. Renders `xrdp.ini` and `sesman.ini` from templates with the runtime ports.
-7. Writes `/run/cloudpc/runtime.json` (no secrets) and prints the banner.
-8. `exec supervisord`, which starts dbus → xrdp-sesman → xrdp → status server →
-   watchdog, restarts anything that dies, and on `SIGTERM` stops everything in
-   order and exits 0.
+**The gateway** is written against the Python standard library only — no pip
+packages, no Node.js, no bundler in the image. `wsproto.py` is a small RFC 6455
+implementation (handshake, framing, masking, control frames, ping/pong), and
+`server.py` bridges each authenticated WebSocket to the loopback VNC socket,
+select-looping in both directions with a 1 MiB client-frame cap and idle
+timeouts. Every 25 seconds it sends a protocol-level ping so that idle mobile
+connections (and Railway's proxy) are kept alive, and it closes the WebSocket
+politely when the desktop goes away.
 
-**Why TigerVNC and not Xorg:** `xorgxrdp` needs a virtual terminal, DRM access
-and an X server that may run as root. None of that exists in an unprivileged
-container, which is where the familiar "black screen after login" comes from.
-`Xvnc` needs nothing but a socket, so sessions start reliably. The client still
-speaks plain RDP - the VNC server is an internal implementation detail bound to
-`127.0.0.1`.
+**The noVNC page** is generated at image build time by
+`docker/tools/build_novnc_page.py`: it keeps noVNC's whole interface, replaces
+the bootstrap so it waits for the desktop, fetches `/api/session`, connects
+automatically with the VNC password, and shows a branded "Starting your Ubuntu
+desktop" overlay instead of noVNC's connection dialog. The script asserts the
+expected noVNC markers exist, so a future noVNC upgrade fails the build instead
+of silently producing a broken page.
 
 ---
 
-## Testing
+## Limitations — read this before you rely on it
 
-```bash
-tests/lint.sh            # static checks, no Docker needed
-scripts/test.sh          # build the image + full container test suite
-tests/integration.sh     # container tests against an existing image
-```
-
-The integration suite boots the image and asserts, among other things:
-
-* the container starts, stays up and prints credentials
-* `/health` becomes `200` and reports the right structure and storage state
-* exactly two public listeners (3389, 8080) and a loopback-only sesman
-* python/pip/venv, node/npm, git, Firefox, Geany, Thunar, terminal all work
-* a **real RDP client** (`xfreerdp`) authenticates and gets an XFCE session
-  owned by the desktop user, with `xfwm4`, `xfce4-panel` and `xfdesktop` alive
-* a terminal window and a Thunar window actually open on that X display
-* the session **survives a client disconnect** and is **resumed** on reconnect
-* `/admin` rejects anonymous and wrong-password requests and accepts valid ones
-* the container log is free of fatal errors
-* `SIGTERM` shuts it down cleanly (exit 0) well inside the timeout
-* the volume keeps the password, files and desktop configuration across a
-  container replacement
-* running without a volume prints the data-loss warning
-
-Every push runs all of this on GitHub Actions
-([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) and posts the full
-report to an issue titled *CI test reports*.
+- **Railway's plan decides the limits.** On the free/trial or Hobby plans a
+  deployment can be **stopped, restarted or removed** when the monthly usage
+  credit runs out, and services may be put to sleep when inactive. This desktop
+  is *not* permanently available: treat it as a session you can lose, and put
+  anything important in a Git repository or on another service. A Railway plan
+  with a guaranteed resource allocation is what makes it dependable.
+- **One replica, one desktop.** Scaling out would produce two independent
+  desktops; keep `numReplicas: 1`.
+- **A container restart ends the session.** XFCE is not restarted with your
+  running programs, because they live in the container, not on the volume.
+  Files on `/data` and the desktop *settings* come back.
+- **No GPU.** Everything is software-rendered (`LIBGL_ALWAYS_SOFTWARE=1`), so
+  video playback and 3D are slow.
+- **The screen size is fixed at boot.** `DESKTOP_RESOLUTION` is applied when the
+  VNC server starts; changing it needs a redeploy. Use noVNC's *Remote resizing*
+  or *Local scaling* to fit your device instead.
+- **Firefox needs memory.** With Firefox open, expect a few hundred MB of RAM;
+  without it the desktop is happy in far less. Build with
+  `--build-arg INSTALL_BROWSER=false` if you do not need it.
+- **Sound is not forwarded** (no PulseAudio in the image). The desktop is
+  silent by design.
+- **First boot is slow** — installing XFCE and TigerVNC dominates the first
+  build, and the first start seeds the XFCE profile. Subsequent deploys reuse
+  the Docker layer cache and the volume.
+- **Writing to the desktop through the browser is exactly what it sounds like.**
+  Anyone with the URL and password gets a shell. Rotate the password if you ever
+  shared the URL, and prefer `DESKTOP_SUDO_NOPASSWD=false`.
+- **Not verified on Railway from this sandbox.** This project was built and
+  tested here with Docker and GitHub Actions (see the CI section), but the
+  sandbox cannot reach Railway's API, so the live deployment had to be created
+  in the dashboard. If a deploy fails, `railway logs` plus the
+  [Troubleshooting](#troubleshooting) table will normally identify it.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Symptom | Likely cause / fix |
 | --- | --- |
-| Client cannot connect | Is the TCP proxy created for port **3389**? Are you using the proxy's port (not 3389) in the client? Is the deployment running? |
-| "Login failed" | Username is `ubuntu` (or your `RDP_USERNAME`); copy the password from the latest deploy log - a container without a volume regenerates it on every start |
-| Certificate warning | Expected: the certificate is self-signed. Accept it once |
-| Black screen for a few seconds | Normal on the first connection: the X server and XFCE session are starting |
-| Desktop is empty after reconnect | You reconnected with a different screen size and got a second session. Pin the resolution, then log out of the extra session |
-| Everything is gone after a deploy | No volume attached, or files were saved outside the home directory |
-| Deploy marked unhealthy | The healthcheck probes `PORT`. If you enabled a healthcheck without the IaC file, add `PORT=8080` to the service variables |
-| Slow / laggy over mobile data | Set `RDP_MAX_BPP=16`, use a smaller resolution, keep compositing off (it already is) |
-| Need a service restarted | `cloudpc-status` shows everything; `sudo supervisorctl -c /opt/cloudpc/supervisor/supervisord.conf restart xrdp` |
+| Deployment fails during build | Look for the failing `RUN` step in the build logs. `apt-get` or the Mozilla repository can fail transiently — redeploy. Building with `INSTALL_BROWSER=false` removes a large, network-dependent layer. |
+| The URL shows "Application failed to respond" | The service is not listening on `PORT`. Check that `PORT` is Railway's value (it injects it) and that `GET /health` returns 200 in the logs of the last deploy. |
+| `503` from `/health`, desktop never ready | XFCE failed to start. `railway logs` shows the `session` program's output; a corrupted panel config on the volume is the usual cause — remove `/data/home/ubuntu/.config/xfce4` and restart, or mount a fresh volume. |
+| Login page loads, "Incorrect password" | The password changed (new volume, or `DESKTOP_PASSWORD` was set later). Read the current one with `railway logs | grep -A8 READY` or `cloudpc-password show`. |
+| `429` on login | Login throttling. Wait five minutes, or restart the container to clear the in-memory counters. |
+| Blank/black desktop | The session died (the watchdog restarts it within ~1 minute) or is still starting. Reload in a few seconds. `/api/diagnostics` (signed in) shows the VNC and session logs. |
+| Desktop is tiny on the phone | Pinch to zoom, or switch noVNC's *Scaling mode* to *Remote resizing*. |
+| Typing does nothing on Android | Tap the desktop once, then use the keyboard button in the noVNC control bar; Chrome's own keyboard needs focus inside the canvas. |
+| Everything is lost after a redeploy | No volume. Add one with mount path `/data`. |
+| "Storage: EPHEMERAL" in the logs | Same as above — the volume is missing or mounted somewhere else. |
+
+Useful inside the desktop: `cloudpc-status` (services, sessions, storage, URL),
+`cloudpc-health --json`, and `sudo cloudpc-password show`.
 
 ---
 
-## What has been verified
+## Repository layout
 
-Every push builds the image on GitHub Actions and runs the full suite against
-real containers - **78 checks, no mocks, no stubs**
-([latest report](https://github.com/itsrivo-dev/Rdp/issues/2)):
-
-| Verified | How |
-| --- | --- |
-| The image builds | `docker buildx build` from this `Dockerfile` |
-| The container boots and stays up | supervisord with all five services `RUNNING` |
-| XRDP starts and listens | port 3389 bound, sesman loopback-only on 3350 |
-| XFCE starts | `xfce4-session`, `xfwm4`, `xfce4-panel`, `xfdesktop`, `xfsettingsd` alive in the session |
-| An RDP session can really be created | `xfreerdp` logs in with the generated password and gets a session owned by `ubuntu` |
-| File manager and terminal are reachable | Thunar, xfce4-terminal, Geany and Firefox windows opened on the session's X display and found with `xdotool` |
-| Python, Node, npm, Git work | `venv` + `pip`, `npm init` + `node -e`, `git init` + commit, all as the desktop user |
-| Ports are what they should be | exactly two public listeners (3389, 8080) |
-| Health checks work | `/health` returns 200 with the right payload, the Docker `HEALTHCHECK` script passes |
-| Startup logs are clean | no fatal errors; the only tolerated lines are documented upstream quirks |
-| Shutdown is graceful | `SIGTERM` stops every service in order, exit code 0, in ~2 s |
-| Disconnect does not kill the desktop | the session keeps the same PID after the client is killed, and is resumed on reconnect |
-| Persistence works | password, files and desktop config survive replacing the container on the same volume |
-| The no-volume warning is honest | a container without a volume says so loudly and reports `storage.persistent = false` |
-
-**Not verified:** an actual Railway deployment, and connecting from a physical
-Android handset. Both need a Railway account (and a phone), which the author
-and the CI environment do not have. Everything Railway-specific here - the
-TCP proxy on 3389, the volume at `/data`, `PORT=8080`, the healthcheck path,
-the injected `RAILWAY_*` variables - follows Railway's current documentation
-and its Infrastructure-as-Code SDK, and the container is exercised in CI with
-the same variables Railway injects at runtime. The RDP protocol path itself
-is verified end to end with a real client; an Android client is a different
-RDP implementation, so expect to pin the resolution as described above.
+```
+Dockerfile                        two-stage build: vendored noVNC, then the desktop
+docker/
+  entrypoint.sh                   configures the container, then execs supervisord
+  lib/common.sh                   shared shell helpers (logging, /proc port probes)
+  bin/cloudpc-vnc                 Xtigervnc supervisor program (loopback + VNC auth)
+  bin/cloudpc-session             starts the XFCE session on the VNC display
+  bin/cloudpc-apply-defaults      re-asserts desktop settings inside the session
+  bin/cloudpc-password            show / change / rotate credentials
+  bin/cloudpc-health              health probe (Docker HEALTHCHECK, watchdog)
+  bin/cloudpc-status              human readable status overview
+  bin/cloudpc-watchdog            self-healing with capped restarts
+  gateway/server.py               HTTP + WebSocket gateway (stdlib only)
+  gateway/wsproto.py              minimal RFC 6455 implementation
+  gateway/security.py             scrypt verification, signed cookies, throttling
+  gateway/static/login.html       the sign-in page (no external assets)
+  gateway/static/manifest.webmanifest
+  supervisor/supervisord.conf     start order, restarts, graceful shutdown
+  skel/…                          XFCE profile seeded into the home directory
+  tools/build_novnc_page.py       generates the desktop page from noVNC's vnc.html
+  tools/make_icons.py             generates the PWA icons and favicon
+tests/
+  lint.sh                         static checks (no Docker needed)
+  unit/test_gateway.py            WebSocket framing, sessions, hashing, throttling
+  clients/rfb_probe.py            independent RFB client used by the e2e tests
+  integration.sh                  full end-to-end suite against a real container
+.railway/railway.ts               optional Railway Infrastructure as Code
+.github/workflows/ci.yml          build + test on every push and pull request
+scripts/{build,test,railway-setup}.sh
+```
 
 ---
 
-## License
+## Licences and credits
 
-MIT - see [LICENSE](LICENSE).
+This project is MIT licensed (see `LICENSE`). It would not exist without:
+
+- **noVNC** (MPL-2.0) — the browser client, fetched and checksum-verified at
+  build time and shipped unmodified apart from the generated landing page.
+- **TigerVNC** (GPL-2.0) — the `Xtigervnc` display/VNC server, installed from
+  Ubuntu's repositories.
+- **XFCE4**, **Ubuntu** and the rest of the desktop stack, likewise from
+  Ubuntu's repositories; **Firefox** from Mozilla's APT repository.

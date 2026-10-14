@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Ubuntu Cloud PC image locally (same image Railway builds).
+# Build the image locally - exactly the image Railway builds from the Dockerfile.
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 

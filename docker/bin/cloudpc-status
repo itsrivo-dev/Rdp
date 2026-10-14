@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Human readable overview of the running Cloud PC (services, sessions, storage).
+# =============================================================================
+#  cloudpc-status - human readable overview of the running desktop.
+#  Contains no credentials; safe to run and to paste into an issue.
+# =============================================================================
 set -uo pipefail
 
 CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
@@ -8,26 +11,44 @@ CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
 
 echo "== services =================================================="
 supervisorctl -c "${CLOUDPC_ROOT}/supervisor/supervisord.conf" status 2>/dev/null \
-    || echo "supervisord is not reachable"
+    || echo "  supervisord is not reachable"
 
 echo
 echo "== health ===================================================="
 cloudpc-health || true
 
 echo
-echo "== desktop sessions =========================================="
+echo "== desktop ==================================================="
 if pgrep -x xfce4-session >/dev/null 2>&1; then
-    pgrep -a -x 'Xvnc|xfce4-session' | sed 's/^/  /'
+    printf '  %-18s : %s\n' "XFCE session" "running"
+    printf '  %-18s : %s\n' "window manager" "$(pgrep -x xfwm4 >/dev/null 2>&1 && echo running || echo 'not running')"
+    printf '  %-18s : %s\n' "panel" "$(pgrep -x xfce4-panel >/dev/null 2>&1 && echo running || echo 'not running')"
 else
-    echo "  none (a session is created when an RDP client connects)"
+    printf '  %-18s : %s\n' "XFCE session" "not running (started automatically, check the logs)"
 fi
+printf '  %-18s : %s\n' "display" "$(ls /tmp/.X11-unix 2>/dev/null | tr '\n' ' ' || echo none)"
 
 echo
-echo "== listening sockets ========================================="
+echo "== listening sockets (all loopback except the gateway) ======="
 (ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null) | sed 's/^/  /'
 
 echo
 echo "== storage ==================================================="
-python3 -c 'import json;d=json.load(open("/run/cloudpc/runtime.json"));print("  "+d["storage_note"]);print("  home: "+d["home"])' 2>/dev/null \
+python3 -c 'import json;d=json.load(open("/run/cloudpc/runtime.json"));print("  "+d.get("storage_note",""));print("  home: "+d.get("home",""))' 2>/dev/null \
     || echo "  runtime information unavailable"
-df -h "$(python3 -c 'import json;print(json.load(open("/run/cloudpc/runtime.json"))["data_dir"])' 2>/dev/null || echo /)" 2>/dev/null | sed 's/^/  /'
+df -h "$(python3 -c 'import json;print(json.load(open("/run/cloudpc/runtime.json")).get("data_dir","/"))' 2>/dev/null || echo /)" 2>/dev/null | sed 's/^/  /'
+
+echo
+echo "== url ======================================================="
+python3 -c '
+import json
+try:
+    runtime = json.load(open("/run/cloudpc/runtime.json"))
+except Exception:
+    runtime = {}
+domain = runtime.get("public_domain") or ""
+if domain:
+    print("  https://%s" % domain)
+else:
+    print("  (no Railway public domain yet - generate one in the dashboard)")
+' 2>/dev/null

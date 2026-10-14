@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Service watchdog - the "health check + restart handling" part of the stack.
+#  cloudpc-watchdog - keep the desktop stack alive without creating restart
+#  loops.
 #
-#  Every CLOUDPC_WATCHDOG_INTERVAL seconds it probes the RDP listener, the
-#  session manager and the status server. A service that fails two consecutive
-#  probes is restarted through supervisord. Desktop sessions are never touched.
+#  Every CLOUDPC_WATCHDOG_INTERVAL seconds it probes the display server, the
+#  web gateway and the XFCE session. A probe that fails twice in a row is
+#  restarted through supervisord - but only a limited number of times: after
+#  that the watchdog logs a loud error and stops retrying, so a broken image
+#  reports itself instead of burning CPU away.
 # =============================================================================
 set -uo pipefail
 
@@ -13,47 +16,67 @@ CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
 . "${CLOUDPC_ROOT}/lib/common.sh"
 
 INTERVAL="${CLOUDPC_WATCHDOG_INTERVAL:-30}"
-GRACE="${CLOUDPC_WATCHDOG_GRACE:-30}"
-RDP_PORT="${RDP_PORT:-3389}"
+GRACE="${CLOUDPC_WATCHDOG_GRACE:-45}"
+MAX_RESTARTS="${CLOUDPC_WATCHDOG_MAX_RESTARTS:-3}"
 HTTP_PORT="${PORT:-8080}"
-SUPERVISORCTL="supervisorctl -c ${CLOUDPC_ROOT}/supervisor/supervisord.conf"
+VNC_PORT="${VNC_PORT:-5900}"
+DESKTOP_USER="${DESKTOP_USER:-ubuntu}"
+SUPERVISOR_CONF="${CLOUDPC_ROOT}/supervisor/supervisord.conf"
 
-declare -A FAILURES=( [xrdp]=0 [xrdp-sesman]=0 [status-server]=0 )
+declare -A FAILURES=( [vnc]=0 [session]=0 [gateway]=0 )
+declare -A RESTARTS=( [vnc]=0 [session]=0 [gateway]=0 )
+declare -A GAVE_UP=( [vnc]=0 [session]=0 [gateway]=0 )
 
 running=true
 shutdown() { running=false; }
 trap shutdown TERM INT
 
-log "watchdog started (interval ${INTERVAL}s, grace ${GRACE}s)"
-sleep "${GRACE}"
+probe_vnc()     { port_listening "${VNC_PORT}"; }
+probe_session() { pgrep -u "${DESKTOP_USER}" -x xfce4-session >/dev/null 2>&1; }
+probe_gateway() { port_listening "${HTTP_PORT}" && http_ok "${HTTP_PORT}" /health; }
 
-probe() {
-    case "$1" in
-        xrdp)          port_listening "${RDP_PORT}" ;;
-        xrdp-sesman)   port_listening 3350 ;;
-        status-server) port_listening "${HTTP_PORT}" && http_ok "${HTTP_PORT}" / ;;
-    esac
+restart_program() {
+    local program="$1"
+    if [ "${GAVE_UP[$program]}" = 1 ]; then
+        return
+    fi
+    if [ "${RESTARTS[$program]}" -ge "${MAX_RESTARTS}" ]; then
+        GAVE_UP[$program]=1
+        err "watchdog: ${program} keeps failing - giving up after ${MAX_RESTARTS} restarts."
+        err "watchdog: check 'cloudpc-status' and the container logs; the process will not be"
+        err "watchdog: restarted again until the container itself is restarted."
+        return
+    fi
+    RESTARTS[$program]=$(( RESTARTS[$program] + 1 ))
+    warn "watchdog: restarting ${program} (attempt ${RESTARTS[$program]}/${MAX_RESTARTS})"
+    if supervisorctl -c "${SUPERVISOR_CONF}" restart "${program}" >/dev/null 2>&1; then
+        log "watchdog: ${program} restarted"
+    else
+        err "watchdog: supervisorctl could not restart ${program}"
+    fi
 }
 
+log "watchdog started (interval ${INTERVAL}s, grace ${GRACE}s, max ${MAX_RESTARTS} restarts per program)"
+sleep "${GRACE}"
+
 while [ "${running}" = true ]; do
-    for service in xrdp xrdp-sesman status-server; do
-        if probe "${service}"; then
-            if [ "${FAILURES[$service]}" -ne 0 ]; then
-                log "watchdog: ${service} recovered"
+    for program in vnc gateway session; do
+        if "probe_${program}"; then
+            if [ "${FAILURES[$program]}" -ne 0 ]; then
+                log "watchdog: ${program} recovered"
             fi
-            FAILURES[$service]=0
-        else
-            FAILURES[$service]=$(( FAILURES[$service] + 1 ))
-            warn "watchdog: ${service} probe failed (${FAILURES[$service]})"
-            if [ "${FAILURES[$service]}" -ge 2 ]; then
-                warn "watchdog: restarting ${service}"
-                ${SUPERVISORCTL} restart "${service}" >/dev/null 2>&1 || \
-                    err "watchdog: could not restart ${service}"
-                FAILURES[$service]=0
-            fi
+            FAILURES[$program]=0
+            continue
+        fi
+        FAILURES[$program]=$(( FAILURES[$program] + 1 ))
+        warn "watchdog: ${program} probe failed (${FAILURES[$program]}/2)"
+        if [ "${FAILURES[$program]}" -ge 2 ]; then
+            restart_program "${program}"
+            FAILURES[$program]=0
         fi
     done
-    # Sleep in short slices so SIGTERM is handled promptly.
+
+    # Sleep in one-second slices so SIGTERM is handled immediately.
     for _ in $(seq 1 "${INTERVAL}"); do
         [ "${running}" = true ] || break
         sleep 1

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#2c001e">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="robots" content="noindex, nofollow">
+<title>Ubuntu Cloud PC &mdash; sign in</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/icon-192.png">
+<style>
+  :root {
+    color-scheme: dark;
+    --aubergine: #2c001e;
+    --aubergine-deep: #170010;
+    --orange: #e95420;
+    --orange-light: #f58a5e;
+    --text: #f0e8ec;
+    --muted: #b6a3ad;
+    --error-bg: #4a1220;
+    --error-border: #a33a52;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    background: radial-gradient(circle at 50% 0%, #4a0033 0%, var(--aubergine) 45%, var(--aubergine-deep) 100%);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main {
+    width: 100%;
+    max-width: 26rem;
+    background: rgba(20, 0, 14, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 1rem;
+    padding: 1.5rem 1.25rem 1.25rem;
+    box-shadow: 0 1.5rem 3rem rgba(0, 0, 0, 0.45);
+  }
+  h1 { margin: 0 0 .25rem; font-size: 1.35rem; letter-spacing: .01em; }
+  .sub { margin: 0 0 1.25rem; color: var(--muted); font-size: .875rem; }
+  label { display: block; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .35rem; }
+  .field { margin-bottom: 1rem; }
+  .userbox {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px dashed rgba(255, 255, 255, 0.18);
+    border-radius: .6rem;
+    padding: .65rem .75rem;
+    font-size: 1rem;
+  }
+  .pw-wrap { position: relative; }
+  input[type=password], input[type=text] {
+    width: 100%;
+    font-size: 1.05rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: .85rem .9rem;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: .6rem;
+  }
+  input:focus { outline: 2px solid var(--orange-light); outline-offset: 1px; }
+  .peek {
+    position: absolute; right: .5rem; top: 50%; transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.14); border: 0; color: var(--text); cursor: pointer;
+    font: 600 .72rem/1 system-ui, sans-serif; letter-spacing: .05em; padding: .55rem .6rem;
+    border-radius: .45rem; text-transform: uppercase;
+  }
+  .peek:active { background: rgba(255, 255, 255, 0.26); }
+  button[type=submit] {
+    width: 100%;
+    margin-top: .5rem;
+    padding: .95rem 1rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(180deg, var(--orange) 0%, #c8420f 100%);
+    border: 0;
+    border-radius: .6rem;
+    cursor: pointer;
+  }
+  button[type=submit]:active { transform: translateY(1px); }
+  button[type=submit][disabled] { opacity: .7; cursor: progress; }
+  .error {
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    border-radius: .6rem;
+    padding: .7rem .8rem;
+    margin-bottom: 1rem;
+    font-size: .9rem;
+  }
+  details { margin-top: 1.25rem; font-size: .85rem; color: var(--muted); }
+  summary { cursor: pointer; color: var(--orange-light); }
+  details p { margin: .6rem 0 0; }
+  code { background: rgba(255, 255, 255, 0.1); padding: .1rem .3rem; border-radius: .25rem; font-size: .85em; }
+  footer { margin-top: 1rem; font-size: .72rem; color: rgba(240, 232, 236, .5); text-align: center; }
+  a { color: var(--orange-light); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ubuntu Cloud PC</h1>
+  <p class="sub">Sign in to open your XFCE desktop in this browser.</p>
+
+  {{ERROR}}
+
+  <form method="post" action="/login" autocomplete="on">
+    <div class="field">
+      <label for="user">Desktop user</label>
+      <div class="userbox" id="user">{{USERNAME}}</div>
+    </div>
+    <div class="field">
+      <label for="password">Desktop password</label>
+      <div class="pw-wrap">
+        <input id="password" name="password" type="password" autocomplete="current-password"
+               autocapitalize="off" autocorrect="off" spellcheck="false" autofocus required>
+        <button class="peek" type="button" id="peek" aria-label="Show password">Show</button>
+      </div>
+    </div>
+    <button type="submit" id="submit">Sign in</button>
+  </form>
+
+  <details>
+    <summary>Don't know the password?</summary>
+    <p>It is generated on first boot and printed in the <strong>deploy logs</strong> of the service
+       (Railway &rarr; your service &rarr; Logs, look for the framed
+       <code>REMOTE DESKTOP READY</code> banner). With a volume attached it stays the same across
+       restarts.</p>
+    <p>To choose your own, set the service variable <code>DESKTOP_PASSWORD</code> and redeploy. To
+       change it later, update that variable, or run <code>cloudpc-password set</code> inside the
+       container.</p>
+  </details>
+
+  <details>
+    <summary>Phone and tablet tips</summary>
+    <p>After signing in, use <em>Add to home screen</em> for a full-screen desktop. Rotate to
+       landscape for more room, pinch to zoom, drag with two fingers to pan, and use the keyboard
+       button in the control bar for typing.</p>
+  </details>
+
+  <footer>Ubuntu Cloud PC {{VERSION}} &middot; <a href="/health">status</a></footer>
+</main>
+
+<script>
+  (function () {
+    var input = document.getElementById('password');
+    var peek = document.getElementById('peek');
+    var submit = document.getElementById('submit');
+    var form = submit.form;
+    var showing = false;
+    var replacement = null;
+
+    peek.addEventListener('click', function () {
+      showing = !showing;
+      var type = showing ? 'text' : 'password';
+      // Replacing the element keeps the value and the focus while switching
+      // between masked and plain text (some mobile browsers refuse to change
+      // the type of a live password input).
+      replacement = input.cloneNode(true);
+      replacement.type = type;
+      input.parentNode.replaceChild(replacement, input);
+      input = replacement;
+      peek.textContent = showing ? 'Hide' : 'Show';
+      input.focus();
+      var end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch (e) {}
+    });
+
+    form.addEventListener('submit', function () {
+      submit.disabled = true;
+      submit.textContent = 'Signing in\u2026';
+    });
+  })();
+</script>
+</body>
+</html>
