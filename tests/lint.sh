@@ -31,6 +31,7 @@ SHELL_SCRIPTS=(
     docker/bin/cloudpc-status
     docker/bin/cloudpc-watchdog
     tests/integration.sh
+    tests/verify_deployment.sh
     tests/lint.sh
     scripts/build.sh
     scripts/test.sh
@@ -292,10 +293,11 @@ REQUIRED=(
     docker/tools/build_novnc_page.py docker/tools/make_icons.py
     docker/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
     docker/skel/.config/autostart/cloudpc-defaults.desktop
-    tests/integration.sh tests/lint.sh tests/unit/test_gateway.py tests/clients/rfb_probe.py
+    tests/integration.sh tests/verify_deployment.sh tests/lint.sh
+    tests/unit/test_gateway.py tests/clients/rfb_probe.py
     tests/unit/test_build_tools.py tests/unit/test_entrypoint_blocks.py
     tests/unit/test_supervisor_config.py tests/unit/test_common_shell.py tests/gateway_smoke.py
-    .railway/railway.ts .github/workflows/ci.yml
+    .railway/railway.ts .github/workflows/ci.yml .github/workflows/verify-deployment.yml
     scripts/build.sh scripts/test.sh scripts/railway-setup.sh
 )
 for file in "${REQUIRED[@]}"; do

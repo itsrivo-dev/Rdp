@@ -109,6 +109,29 @@ in the deploy logs (see below).
 you would rather drive it from a terminal, `./scripts/railway-setup.sh` and
 `.railway/railway.ts` (Railway Infrastructure as Code) automate steps 1–3.
 
+### 5. Verify the deployment
+
+Two independent checks, and neither of them needs the password:
+
+```bash
+# from any machine that can reach the URL
+tests/verify_deployment.sh https://<your-service>.up.railway.app
+```
+
+It waits for the deployment to answer (Railway needs a moment), then checks that
+the URL serves the login page over HTTPS, that the page is responsive and
+self-contained, that `/health` sees the display server, the XFCE session and the
+volume, that everything behind the login answers `401` without a session, and
+that port `5900` is *not* reachable from the internet.
+
+The same script runs from GitHub: **Actions → verify-deployment → Run
+workflow**, paste the URL. Set the repository variable `RAILWAY_URL` (Settings →
+Secrets and variables → Actions → Variables) and every push to `main` re-checks
+the deployment by itself after Railway redeploys it.
+
+The one step no script can do is entering the password, so that stays yours:
+open the URL in Chrome on the phone and sign in.
+
 ### Do I need to set any variables?
 
 No. Every variable has a working default; the password is generated on first
@@ -295,6 +318,9 @@ docker run --rm -p 8080:8080 -v cloudpc-data:/data cloudpc:test
 
 # open http://localhost:8080 and read the password from the container logs
 ```
+
+`tests/verify_deployment.sh <url>` runs the same kind of checks against a
+deployed service instead of a local container.
 
 Full test suite (static checks, unit tests, build, end-to-end):
 

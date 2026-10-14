@@ -1,0 +1,67 @@
+name: verify-deployment
+
+# Checks the *deployed* desktop over its public HTTPS URL - the one thing the
+# build-and-test workflow cannot do, because it only ever sees a local
+# container.
+#
+# Start it by hand from the Actions tab ("Run workflow") and paste the URL, or
+# set the repository variable RAILWAY_URL once (Settings -> Secrets and
+# variables -> Actions -> Variables) and every push to main re-checks the
+# deployment after Railway has redeployed it.
+#
+# The checks and their reasoning live in tests/verify_deployment.sh; this file
+# only supplies the URL and the waiting time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Public HTTPS URL of the deployed desktop, e.g. https://<service>.up.railway.app"
+        required: true
+        type: string
+      wait_seconds:
+        description: "How long to wait for the deployment to answer (seconds)"
+        required: false
+        default: "300"
+        type: string
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: check the live deployment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find out which URL to check
+        id: target
+        env:
+          INPUT_URL: ${{ inputs.url }}
+          RAILWAY_URL_VARIABLE: ${{ vars.RAILWAY_URL }}
+        run: |
+          set -uo pipefail
+          url="${INPUT_URL:-${RAILWAY_URL_VARIABLE}}"
+          printf 'url=%s\n' "${url}" >> "$GITHUB_OUTPUT"
+          if [ -z "${url}" ]; then
+            {
+              echo "### No deployment URL configured"
+              echo
+              echo "Nothing to check. Either start this workflow with a URL, or set the"
+              echo "repository variable \`RAILWAY_URL\` to the public address of the service"
+              echo "(Railway: service -> Settings -> Networking -> Generate domain)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::no URL given and RAILWAY_URL is not set - nothing to check"
+          fi
+
+      - name: Check the deployed desktop
+        if: steps.target.outputs.url != ''
+        env:
+          DEPLOY_URL: ${{ steps.target.outputs.url }}
+          WAIT_SECONDS: ${{ inputs.wait_seconds || '300' }}
+        run: |
+          set -uo pipefail
+          tests/verify_deployment.sh "${DEPLOY_URL}" --wait "${WAIT_SECONDS}" | tee -a "$GITHUB_STEP_SUMMARY"
