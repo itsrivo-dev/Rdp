@@ -46,8 +46,12 @@ PASSWORD_PRINT="${DESKTOP_PASSWORD_PRINT:-true}"
 SUDO_NOPASSWD="${DESKTOP_SUDO_NOPASSWD:-false}"
 DATA_DIR="${RAILWAY_VOLUME_MOUNT_PATH:-${CLOUDPC_DATA_DIR:-/data}}"
 
+# Everything the embedded Python blocks and supervisord's %(ENV_*)% references
+# need must be exported: a shell variable that is only *set* does not exist for a
+# child process. tests/unit/test_entrypoint_blocks.py enforces this.
 export DESKTOP_USER DESKTOP_UID DESKTOP_GID HTTP_PORT VNC_PORT DESKTOP_DISPLAY
 export DESKTOP_RESOLUTION DESKTOP_DEPTH VNC_FRAME_RATE DESKTOP_NAME SESSION_TTL_HOURS
+export DATA_DIR SUDO_NOPASSWD PASSWORD_PRINT
 
 id "${DESKTOP_USER}" >/dev/null 2>&1 || die "desktop user '${DESKTOP_USER}' does not exist in this image"
 
