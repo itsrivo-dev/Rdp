@@ -210,8 +210,7 @@ RUN set -eux; \
     useradd -m -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash "${DESKTOP_USER}"; \
     usermod -aG sudo "${DESKTOP_USER}"; \
     groupadd -r cloudpc; \
-    useradd -r -M -s /usr/sbin/nologin -d /nonexistent cloudpc; \
-    usermod -aG cloudpc cloudpc; \
+    useradd -r -M -g cloudpc -s /usr/sbin/nologin -d /nonexistent cloudpc; \
     install -d -m 0755 -o root -g root /opt/cloudpc /var/log/cloudpc; \
     install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix; \
     install -d -m 0755 /run/dbus; \
