@@ -1,0 +1,106 @@
+name: verify-deployment
+
+# Checks the *deployed* desktop over its public HTTPS URL - the one thing the
+# build-and-test workflow cannot do, because it only ever sees a local
+# container.
+#
+# Start it by hand from the Actions tab ("Run workflow") and paste the URL, or
+# set the repository variable RAILWAY_URL once (Settings -> Secrets and
+# variables -> Actions -> Variables) and every push to main re-checks the
+# deployment after Railway has redeployed it.
+#
+# The checks and their reasoning live in tests/verify_deployment.sh; this file
+# supplies the URL, the waiting time, and publishes the result as a comment on
+# the report issue so that it can be read without downloading anything from
+# the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Public HTTPS URL of the deployed desktop, e.g. https://<service>.up.railway.app"
+        required: true
+        type: string
+      wait_seconds:
+        description: "How long to wait for the deployment to answer (seconds)"
+        required: false
+        default: "300"
+        type: string
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: check the live deployment
+    runs-on: ubuntu-latest
+    # issues: write only for the step that publishes the result; the check
+    # itself just reads the URL.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find out which URL to check
+        id: target
+        env:
+          INPUT_URL: ${{ inputs.url }}
+          RAILWAY_URL_VARIABLE: ${{ vars.RAILWAY_URL }}
+        run: |
+          set -uo pipefail
+          url="${INPUT_URL:-${RAILWAY_URL_VARIABLE}}"
+          printf 'url=%s\n' "${url}" >> "$GITHUB_OUTPUT"
+          if [ -z "${url}" ]; then
+            {
+              echo "### No deployment URL configured"
+              echo
+              echo "Nothing to check. Either start this workflow with a URL, or set the"
+              echo "repository variable \`RAILWAY_URL\` to the public address of the service"
+              echo "(Railway: service -> Settings -> Networking -> Generate domain)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::no URL given and RAILWAY_URL is not set - nothing to check"
+          fi
+
+      - name: Check the deployed desktop
+        id: check
+        if: steps.target.outputs.url != ''
+        env:
+          DEPLOY_URL: ${{ steps.target.outputs.url }}
+          WAIT_SECONDS: ${{ inputs.wait_seconds || '300' }}
+        run: |
+          set -uo pipefail
+          tests/verify_deployment.sh "${DEPLOY_URL}" --wait "${WAIT_SECONDS}" \
+            > verify-deployment.log 2>&1 || true
+          cat verify-deployment.log
+          cat verify-deployment.log >> "$GITHUB_STEP_SUMMARY"
+          # The summary line is the verdict: "passed: N  failed: 0".
+          grep -qE "^passed: [0-9]+ +failed: 0$" verify-deployment.log
+
+      - name: Publish the result (readable without downloading artefacts)
+        if: always() && steps.target.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          title="CI test reports"
+          number="$(gh issue list --state all --search "\"$title\" in:title" \
+                      --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+          if [ -z "$number" ]; then
+            number="$(gh issue create --title "$title" \
+              --body "Automated build and test reports for the Ubuntu Cloud PC image. Each comment is one CI run." \
+              | sed 's#.*/##')"
+          fi
+          {
+            echo "## Deployment check $(date -u '+%Y-%m-%dT%H:%MZ')"
+            echo
+            echo "**url:** \`${{ steps.target.outputs.url }}\`  •  **result:** \`${{ steps.check.outcome }}\`"
+            echo "**run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            cat verify-deployment.log
+            echo '```'
+          } > verify-comment.md
+          gh issue comment "$number" --body-file verify-comment.md && echo "result posted to issue #$number"

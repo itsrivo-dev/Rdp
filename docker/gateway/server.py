@@ -672,12 +672,15 @@ class GatewayServer(socketserver.ThreadingTCPServer):
 
     def process_request(self, request, client_address) -> None:
         if not self._slots.acquire(blocking=False):
+            # No slot was taken for this connection, so close it through the
+            # base class: going through shutdown_request() would hand a slot
+            # back that this connection never held.
             try:
                 request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
                                 b"Content-Length: 17\r\nConnection: close\r\n\r\nserver is busy\n")
             except OSError:
                 pass
-            self.shutdown_request(request)
+            socketserver.TCPServer.shutdown_request(self, request)
             return
         try:
             super().process_request(request, client_address)
@@ -686,7 +689,15 @@ class GatewayServer(socketserver.ThreadingTCPServer):
             raise
 
     def shutdown_request(self, request) -> None:
-        super().shutdown_request(request)
+        # One slot per connection, taken in process_request and given back here
+        # whenever the connection ends - successful or not. Releasing only on
+        # the error path leaked a slot per request, so after
+        # CLOUDPC_MAX_CONNECTIONS requests every answer was "503 server is
+        # busy", including /health: the login page never loaded.
+        try:
+            super().shutdown_request(request)
+        finally:
+            self._slots.release()
 
     def handle_error(self, request, client_address) -> None:
         exc = sys.exc_info()[1]

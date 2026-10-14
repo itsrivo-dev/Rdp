@@ -62,15 +62,31 @@ desktop_ready() {
 
 wait_for_health() {
     local port="$1" want_desktop="${2:-true}" tries="${3:-240}"
+    local waited=0 last_code=""
     for _ in $(seq 1 "${tries}"); do
-        if [ "$(http_code "http://127.0.0.1:${port}/health")" = "200" ]; then
+        last_code="$(http_code "http://127.0.0.1:${port}/health")"
+        if [ "${last_code}" = "200" ]; then
             if [ "${want_desktop}" = "false" ]; then
                 return 0
             fi
             desktop_ready "${port}" && return 0
         fi
+        # Progress line every ~30 s: this ends up in the CI report and shows what
+        # the desktop was doing while we waited.
+        if [ $((waited % 30)) -eq 0 ]; then
+            if [ "${last_code}" = "200" ]; then
+                printf '    [%3ss] waiting for the desktop: %s\n' "${waited}" \
+                    "$(curl -s --max-time 10 "http://127.0.0.1:${port}/health" \
+                        | jq -c '{checks, desktop, sessions_available, hints}' 2>/dev/null)"
+            else
+                printf '    [%3ss] the gateway is not answering /health yet (http %s)\n' \
+                    "${waited}" "${last_code}"
+            fi
+        fi
         sleep 2
+        waited=$((waited + 2))
     done
+    printf '    gave up after %ss waiting for the desktop\n' "${waited}"
     return 1
 }
 
@@ -89,6 +105,22 @@ dump_diagnostics() {
         docker exec "${name}" ps -eo pid,user,comm --sort=pid 2>&1 | tail -30 || true
         echo "--- cloudpc-health ---"
         docker exec "${name}" cloudpc-health 2>&1 || true
+        echo "--- cloudpc-status ---"
+        docker exec "${name}" cloudpc-status 2>&1 | head -40 || true
+        echo "--- desktop user session log ---"
+        docker exec "${name}" bash -c 'tail -40 /var/log/cloudpc/session.log 2>/dev/null' 2>&1 || true
+        echo "--- .xsession-errors ---"
+        docker exec "${name}" bash -c 'tail -30 ~ubuntu/.xsession-errors 2>/dev/null' 2>&1 || true
+        echo "--- xfce config present? ---"
+        docker exec "${name}" bash -c 'ls -la ~ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/ 2>/dev/null | head' 2>&1 || true
+        echo "--- storage permissions (root view) ---"
+        docker exec "${name}" sh -c 'for p in /data /data/home "$(getent passwd ubuntu | cut -d: -f6)"; do if [ -e "$p" ]; then stat -c "%a %U:%G %n" "$p"; else echo "missing: $p"; fi; done' 2>&1 || true
+        echo "--- the desktop user reaches its own home? ---"
+        docker exec -u ubuntu "${name}" sh -c 'h="$(getent passwd ubuntu | cut -d: -f6)"; [ -d "$h" ] && echo "reachable: $h" || echo "NOT REACHABLE: $h"' 2>&1 || true
+        echo "--- container log (head) ---"
+        docker logs "${name}" 2>&1 | head -40 | sed 's/^/  /'
+        echo "--- /proc/net/tcp listeners ---"
+        docker exec "${name}" bash -c 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk "\$4 == \"0A\" {print \$2}"' 2>&1 || true
         echo
     } >> "${ARTIFACTS}/diagnostics.log" 2>&1
 }
@@ -297,8 +329,12 @@ ETAG="$(curl -s -D - -o /dev/null --max-time 15 -H "Cookie: ${COOKIE}" "${BASE_U
 code="$(http_code -H "Cookie: ${COOKIE}" -H "If-None-Match: ${ETAG}" "${BASE_URL}/vnc/app/ui.js")"
 [ "${code}" = "304" ] && ok "a conditional request returns 304" || fail "If-None-Match -> ${code} (expected 304)"
 
-if curl -s -D - -o /dev/null --max-time 20 -H "Cookie: ${COOKIE}" -H "Accept-Encoding: gzip" \
-        "${BASE_URL}/vnc/app/ui.js" | grep -qi "content-encoding: gzip"; then
+# grep -q stops reading as soon as it matches; piped into curl that closes the
+# pipe and, with `set -o pipefail`, the pipeline fails even on a match. Capture
+# the headers first and grep the captured text.
+GZIP_HEADERS="$(curl -s -D - -o /dev/null --max-time 20 -H "Cookie: ${COOKIE}" \
+    -H "Accept-Encoding: gzip" "${BASE_URL}/vnc/app/ui.js")"
+if grep -qi "content-encoding: gzip" <<<"${GZIP_HEADERS}"; then
     ok "text assets are gzipped when the client asks (mobile bandwidth)"
 else
     fail "no gzip Content-Encoding for ui.js"
@@ -526,10 +562,11 @@ if docker exec "${CONTAINER}" grep -rq "${PASSWORD}" /run/cloudpc/auth.json /run
 else
     ok "the runtime files hold hashes and metadata only"
 fi
-if docker exec "${CONTAINER}" sh -c 'stat -c %a /run/cloudpc/session.key' 2>/dev/null | grep -q "640"; then
+SESSION_KEY_MODE="$(docker exec "${CONTAINER}" sh -c 'stat -c %a /run/cloudpc/session.key' 2>/dev/null)"
+if [ "${SESSION_KEY_MODE}" = "640" ]; then
     ok "the session key is mode 640 (root:cloudpc)"
 else
-    note "unexpected session key permissions"
+    note "unexpected session key permissions (got '${SESSION_KEY_MODE}')"
 fi
 
 # ===========================================================================
@@ -555,15 +592,33 @@ code="$(http_code "${BASE_URL}/health")"
 # ===========================================================================
 section "8. persistence across a container replacement"
 # ===========================================================================
-run_as_desktop "${CONTAINER}" 'echo persistence-probe > "$HOME/persist.txt"' >/dev/null 2>&1
-[ -f "${VOLUME}/home/ubuntu/persist.txt" ] && ok "the home directory lives on the volume" \
+if run_as_desktop "${CONTAINER}" 'echo persistence-probe > "$HOME/persist.txt"'; then
+    ok "a file written inside the desktop lands in its home directory"
+else
+    fail "could not write a file into the desktop home"
+fi
+
+# The volume directory is written by the container, and it is deliberately
+# closed off: .secrets is 0700 root-only and the home directory is 0750, so the
+# CI user cannot open those paths on the host at all. Inspect the host directory
+# through a throwaway container that mounts the very same directory read-only.
+volume_inspect() {  # <stat format> <path inside /data>
+    docker run --rm -v "${VOLUME}:/check:ro" --entrypoint /bin/sh "${IMAGE}" \
+        -c "stat -c '$1' '/check$2'" 2>/dev/null
+}
+volume_has() { [ -n "$(volume_inspect '%n' "$1")" ]; }
+
+volume_has /home/ubuntu/persist.txt && ok "the home directory lives on the volume" \
     || fail "the home directory is not on the volume"
-[ -f "${VOLUME}/home/ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml" ] \
+volume_has /home/ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
     && ok "the desktop configuration is persisted" || fail "the desktop configuration is not persisted"
-[ -f "${VOLUME}/.secrets/session.key" ] && ok "the session signing key is persisted" \
+volume_has /.secrets/session.key && ok "the session signing key is persisted" \
     || fail "the session key is not persisted"
-[ -f "${VOLUME}/.secrets/vnc_password" ] && ok "the VNC password is persisted" \
+volume_has /.secrets/vnc_password && ok "the VNC password is persisted" \
     || fail "the VNC password is not persisted"
+[ "$(volume_inspect '%a' /.secrets)" = "700" ] \
+    && ok "the secrets on the volume are mode 700 (root only)" \
+    || fail "the secrets on the volume are not mode 700 (got $(volume_inspect '%a' /.secrets))"
 
 docker stop -t 30 "${CONTAINER}" >/dev/null 2>&1
 CLEAN_STOPS="$(docker logs "${CONTAINER}" 2>&1 | grep -cE \
@@ -578,7 +633,7 @@ if start_container "${CONTAINER}-2" "${PORT2}" yes ""; then
 else
     fail "could not restart the container"
 fi
-if wait_for_health "${PORT2}" true 300; then
+if wait_for_health "${PORT2}" true 200; then
     ok "the desktop came back after the container replacement"
 else
     fail "the desktop did not come back"
@@ -608,7 +663,7 @@ docker exec "${CONTAINER}-2" test -f "/data/home/ubuntu/persist.txt" 2>/dev/null
 
 PORT3=$((HTTP_PORT_BASE + 2))
 docker rm -f "${CONTAINER}-2" >/dev/null 2>&1
-if start_container "${CONTAINER}-3" "${PORT3}" yes "" && wait_for_health "${PORT3}" true 300; then
+if start_container "${CONTAINER}-3" "${PORT3}" yes "" && wait_for_health "${PORT3}" true 200; then
     THIRD_PASSWORD="$(docker logs "${CONTAINER}-3" 2>&1 \
         | sed -n 's/^ *Password *: *\([A-Za-z0-9-]\{20,\}\).*$/\1/p' | head -1)"
     [ "${THIRD_PASSWORD}" = "${GENERATED_PASSWORD}" ] && ok "the password is stable across restarts" \
@@ -628,7 +683,7 @@ if start_container "${CONTAINER}-4" "${PORT4}" "" ""; then
 else
     fail "a container without a volume failed to start"
 fi
-if wait_for_health "${PORT4}" true 300; then
+if wait_for_health "${PORT4}" true 200; then
     ok "the desktop also works without a volume"
 else
     fail "the desktop did not start without a volume"
@@ -637,8 +692,14 @@ fi
 curl -s --max-time 10 "http://127.0.0.1:${PORT4}/health" > "${ARTIFACTS}/health-ephemeral.json"
 [ "$(jq -r '.storage.persistent' "${ARTIFACTS}/health-ephemeral.json")" = "false" ] \
     && ok "/health reports storage as not persistent" || fail "/health wrongly claims persistence"
-docker logs "${CONTAINER}-4" 2>&1 | grep -q "WILL BE LOST" \
-    && ok "the data-loss warning is printed" || fail "no ephemeral storage warning"
+# Same pipefail trap as above: collect the log first, then grep it. The log is
+# kept as an artefact so a failure can be read without re-running CI.
+docker logs "${CONTAINER}-4" > "${ARTIFACTS}/container-4.log" 2>&1
+if grep -q "WILL BE LOST" "${ARTIFACTS}/container-4.log"; then
+    ok "the data-loss warning is printed"
+else
+    fail "no ephemeral storage warning (see container-4.log)"
+fi
 docker stop -t 30 "${CONTAINER}-4" >/dev/null 2>&1
 docker rm -f "${CONTAINER}-4" >/dev/null 2>&1
 
@@ -650,6 +711,16 @@ printf 'passed: %s%d%s  failed: %s%d%s  skipped: %s%d%s\n' \
 if [ "${FAIL_COUNT}" -gt 0 ]; then
     printf '\nfailed checks:\n'
     printf '  - %s\n' "${FAILED_TESTS[@]}"
+
+    # Workflow annotations: they survive where raw logs cannot always be read
+    # (job logs live on a separate host), so put the failed checks and the tail
+    # of the container log straight into the run's annotations.
+    joined="$(printf '%s; ' "${FAILED_TESTS[@]}")"
+    printf '::error title=end-to-end failures::%s\n' "${joined}"
+    if [ -f "${ARTIFACTS}/diagnostics.log" ]; then
+        context="$(tail -25 "${ARTIFACTS}/diagnostics.log" | tr '\n' '|')"
+        printf '::warning title=container context::%s\n' "${context:0:6000}"
+    fi
     exit 1
 fi
 exit 0

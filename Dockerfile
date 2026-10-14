@@ -166,6 +166,9 @@ RUN set -eux; \
         libgl1-mesa-dri \
         tigervnc-standalone-server \
         tigervnc-common \
+        # tigervnc-tools is what ships vncpasswd; without it the entrypoint
+        # cannot build the VNC password file and refuses to start.
+        tigervnc-tools \
         xauth \
         x11-xserver-utils \
         x11-utils \
@@ -206,15 +209,40 @@ RUN set -eux; \
 #    cloudpc : unprivileged account for the web gateway
 # -----------------------------------------------------------------------------
 RUN set -eux; \
-    groupadd -g "${DESKTOP_GID}" "${DESKTOP_USER}"; \
-    useradd -m -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash "${DESKTOP_USER}"; \
+    # The desktop account. The official ubuntu images have shipped a uid/gid
+    # 1000 "ubuntu" account in some releases, so reuse whatever the base image
+    # already provides instead of making groupadd/useradd exit with "name
+    # already in use".
+    if getent group "${DESKTOP_GID}" >/dev/null; then \
+        existing_group="$(getent group "${DESKTOP_GID}" | cut -d: -f1)"; \
+        if [ "${existing_group}" != "${DESKTOP_USER}" ]; then \
+            groupmod -n "${DESKTOP_USER}" "${existing_group}"; \
+        fi; \
+    else \
+        groupadd -g "${DESKTOP_GID}" "${DESKTOP_USER}"; \
+    fi; \
+    if id -u "${DESKTOP_USER}" >/dev/null 2>&1; then \
+        usermod -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash \
+            -d "/home/${DESKTOP_USER}" "${DESKTOP_USER}"; \
+        install -d -m 0750 -o "${DESKTOP_USER}" -g "${DESKTOP_USER}" "/home/${DESKTOP_USER}"; \
+    else \
+        useradd -m -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash "${DESKTOP_USER}"; \
+    fi; \
     usermod -aG sudo "${DESKTOP_USER}"; \
-    groupadd -r cloudpc; \
-    useradd -r -M -g cloudpc -s /usr/sbin/nologin -d /nonexistent cloudpc; \
+    # The unprivileged account that runs the web gateway. -N stops useradd from
+    # asking for a user-private group, which would collide with the group above
+    # (that collision is what made the build exit with code 9).
+    if ! getent group cloudpc >/dev/null; then groupadd -r cloudpc; fi; \
+    if ! id -u cloudpc >/dev/null 2>&1; then \
+        useradd -r -M -N -g cloudpc -s /usr/sbin/nologin -d /nonexistent cloudpc; \
+    fi; \
     install -d -m 0755 -o root -g root /opt/cloudpc /var/log/cloudpc; \
     install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix; \
     install -d -m 0755 /run/dbus; \
-    install -d -m 0755 -o root -g root /usr/share/novnc
+    install -d -m 0755 -o root -g root /usr/share/novnc; \
+    # Facts about what the base image actually contained, for the diagnostics.
+    echo "desktop account:"; id "${DESKTOP_USER}"; \
+    echo "gateway account:"; id cloudpc
 
 # -----------------------------------------------------------------------------
 # 5. project files
@@ -237,17 +265,37 @@ RUN set -eux; \
     chmod 0644 /var/log/cloudpc/session.log; \
     chmod 0755 /var/log/cloudpc; \
     install -d -m 0700 -o "${DESKTOP_USER}" -g "${DESKTOP_USER}" "/run/user/${DESKTOP_UID}"; \
-    chmod 0750 /opt/cloudpc/gateway /opt/cloudpc/gateway/static; \
+    # The gateway runs as the unprivileged 'cloudpc' account, so its own code
+    # must be traversable and readable by it: a 0750 directory made the
+    # gateway die with "can't open file ... Permission denied" in CI.
+    chmod 0755 /opt/cloudpc/gateway /opt/cloudpc/gateway/static; \
     python3 -m compileall -q /opt/cloudpc/gateway; \
     bash -n /opt/cloudpc/entrypoint.sh; \
     bash -n /opt/cloudpc/bin/cloudpc-vnc; \
     bash -n /opt/cloudpc/bin/cloudpc-session; \
+    # Every external binary the runtime scripts call, checked at build time:
+    # a missing one otherwise only shows up when the container refuses to start.
+    for binary in Xtigervnc vncpasswd xfce4-session xfwm4 xfce4-panel xfdesktop \
+                  xfconf-query xfsettingsd xset xdotool dbus-run-session \
+                  xdg-user-dirs-update supervisorctl python3 chpasswd pgrep; do \
+        command -v "${binary}" >/dev/null || { echo "FATAL: ${binary} is missing"; exit 1; }; \
+    done; \
     # noVNC ships as ES modules with relative imports and vendored pako: no
     # bundler, no Node.js in the image, just static files.
     test -f /usr/share/novnc/index.html; \
     test -f /usr/share/novnc/core/rfb.js; \
     test -d /usr/share/novnc/vendor/pako; \
-    test -f /opt/cloudpc/gateway/static/login.html
+    test -f /opt/cloudpc/gateway/static/login.html; \
+    # Both service accounts are unprivileged: everything they must read has to
+    # be world readable/traversable, or the program dies with "Permission
+    # denied" a second after the container starts (seen in CI with a 0750
+    # gateway directory).
+    [ "$(stat -c '%a' /opt/cloudpc/gateway)" = "755" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/gateway/static)" = "755" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/gateway/server.py)" = "644" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/gateway/static/login.html)" = "644" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/lib/common.sh)" = "644" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/bin/cloudpc-session)" = "755" ]
 
 # -----------------------------------------------------------------------------
 # 6. ports and runtime defaults

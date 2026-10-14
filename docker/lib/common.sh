@@ -23,6 +23,57 @@ banner() {
     printf '%s\n\n' "$(printf '=%.0s' $(seq 1 74))"
 }
 
+cloudpc_home() {
+    # The desktop user's home directory.
+    #
+    # Supervisord starts the graphical programs as the desktop user but keeps
+    # the container environment, where HOME is root's - a directory that user
+    # cannot write to. HOME_DIR is exported by the entrypoint and moves to the
+    # persistent volume when one is attached, so it is the authoritative
+    # answer; the passwd database is the fallback for manual runs.
+    local dir="${HOME_DIR:-}"
+    if [ -z "${dir}" ]; then
+        dir="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "${dir}" ]; then
+        die "cannot determine the home directory of $(id -un) (HOME_DIR is unset)"
+    fi
+    if [ ! -d "${dir}" ]; then
+        # Almost always an ancestor directory (the volume root, for instance) that
+        # this unprivileged account cannot traverse - not a missing home.
+        die "home directory ${dir} is not usable by $(id -un): it does not exist, or a directory on the way to it is not traversable"
+    fi
+    if [ ! -w "${dir}" ]; then
+        die "home directory ${dir} is not writable by $(id -un)"
+    fi
+    printf '%s' "${dir}"
+}
+
+grant_traverse() {
+    # Let every account walk *through* the directories on the way to <path>.
+    #
+    # The volume root is provided by the platform and can arrive as 0700
+    # root:root; the desktop user then cannot even stat its own home directory,
+    # which surfaces as an obscure failure deep inside the XFCE session. Only
+    # the traverse bit is added, never read access: nothing new becomes listable.
+    local path="$1" mode
+    path="$(dirname "${path}")"
+    while [ -n "${path}" ] && [ "${path}" != "/" ]; do
+        mode="$(stat -c '%a' "${path}" 2>/dev/null || echo "")"
+        case "${mode}" in
+            "" | *[1357]) ;;  # already traversable by everyone, or cannot be stat'ed
+            *)
+                if chmod o+x "${path}" 2>/dev/null; then
+                    log "granted traverse access to ${path} (was ${mode})"
+                else
+                    die "cannot make ${path} traversable by unprivileged users (mode ${mode})"
+                fi
+                ;;
+        esac
+        path="$(dirname "${path}")"
+    done
+}
+
 # is_true <value> -- lenient boolean parsing for environment variables.
 is_true() {
     case "${1,,}" in

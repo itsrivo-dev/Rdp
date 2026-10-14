@@ -21,6 +21,10 @@ jobs:
     name: static checks and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Only this workflow's image job writes to the repository (it comments on
+    # the report issue); checking out code is all the static job needs.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -47,8 +51,10 @@ jobs:
       - name: Gateway smoke test (real server, stand-in VNC, no Docker)
         run: |
           set -o pipefail
-          python3 -m pip install --quiet --break-system-packages websocket-client \
-            || python3 -m pip install --quiet --user websocket-client
+          # websocket-client for the gateway smoke test, PyYAML for the
+          # workflow structure tests (tests/unit/test_workflows.py).
+          python3 -m pip install --quiet --break-system-packages websocket-client pyyaml \
+            || python3 -m pip install --quiet --user websocket-client pyyaml
           curl -fsSL --retry 3 -o /tmp/novnc.tar.gz \
             https://github.com/novnc/noVNC/archive/refs/tags/v1.7.0.tar.gz
           echo "b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6  /tmp/novnc.tar.gz" \
@@ -73,6 +79,9 @@ jobs:
   image:
     name: docker build and end-to-end desktop tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 75
     needs: static
     steps:
@@ -98,6 +107,19 @@ jobs:
             'cat /etc/os-release | head -2; python3 -V; Xtigervnc -version 2>&1 | head -1; ls /usr/share/novnc | head' \
             | tee -a image.log
 
+      - name: Base image facts (only reported when something above failed)
+        if: failure()
+        run: |
+          facts="$(docker run --rm ubuntu:22.04 sh -c '
+            echo "uid1000=$(getent passwd 1000 | cut -d: -f1)";
+            echo "gid1000=$(getent group 1000 | cut -d: -f1)";
+            echo "ubuntu=$(id -u ubuntu 2>/dev/null || echo absent)";
+            echo "cloudpc=$(id -u cloudpc 2>/dev/null || echo absent)";
+            echo "sysusers=$(getent passwd | wc -l)";
+          ' 2>&1 | tr "\n" " ")"
+          echo "::error::base image facts - ${facts}"
+          exit 1
+
       - name: Install test client dependencies
         run: |
           sudo apt-get update -qq
@@ -115,6 +137,7 @@ jobs:
       - name: Collect the report
         if: always()
         run: |
+          set +e
           {
             echo "## CI report \`${GITHUB_SHA:0:8}\` — run [#${GITHUB_RUN_NUMBER}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
@@ -126,14 +149,45 @@ jobs:
             echo '```'; tail -c 6000 lint.log 2>/dev/null; echo '```'
             echo "### end-to-end tests"
             echo '```'; tail -c 24000 integration.log 2>/dev/null; echo '```'
+            echo "### failed end-to-end checks"
+            echo '```'; grep -A40 "^failed checks:" integration.log 2>/dev/null; echo '```'
             echo "### container diagnostics"
             echo '```'; tail -c 12000 test-results/diagnostics.log 2>/dev/null; echo '```'
+            echo "### health"
+            echo '```'; cat test-results/health-volume.json 2>/dev/null | head -c 3000; echo '```'
+            echo "### probe results"
+            for probe in test-results/probe-*.json; do
+              [ -f "$probe" ] || continue
+              echo "**$probe**"
+              echo '```'; head -c 2000 "$probe"; echo '```'
+            done
             echo "### container log (tail)"
             echo '```'; tail -c 8000 test-results/container-1.log 2>/dev/null; echo '```'
             echo "### screenshots"
             echo "Artifacts contain the framebuffer captured through the web gateway."
           } > report.md
+          head -c 60000 report.md > report.trunc.md && mv report.trunc.md report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the report (readable from the API and from GitHub)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          title="CI test reports"
+          number="$(gh issue list --state all --search "\"$title\" in:title" \
+                      --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+          if [ -z "$number" ]; then
+            number="$(gh issue create --title "$title" \
+              --body "Automated build and test reports for the Ubuntu Cloud PC image. Each comment is one CI run." \
+              | sed 's#.*/##')"
+          fi
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file report.md && echo "report posted to issue #$number"
+          else
+            echo "could not find or create the report issue"
+          fi
 
       - name: Upload test artefacts (logs + screenshots of the real desktop)
         if: always()
@@ -150,7 +204,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Fail loudly if the desktop tests failed
-        if: steps.integration.outcome != 'success'
+        if: failure() && steps.integration.outcome == 'failure'
         run: |
           echo "::error::the end-to-end desktop tests failed - see the report above"
           exit 1
