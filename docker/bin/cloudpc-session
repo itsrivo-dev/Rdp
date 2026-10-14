@@ -16,6 +16,12 @@ CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
 
 DISPLAY_NUM="${DESKTOP_DISPLAY:-1}"
 export DISPLAY=":${DISPLAY_NUM}"
+
+# Supervisord keeps root's environment, so $HOME is /root when this program
+# starts as the desktop user. HOME_DIR is exported by the entrypoint (it moves
+# to the persistent volume) - resolve HOME from it before anything else.
+HOME="$(cloudpc_home)"
+export HOME
 export XAUTHORITY="${HOME}/.Xauthority"
 
 [ -f "${XAUTHORITY}" ] || { umask 077; : > "${XAUTHORITY}"; }
@@ -37,7 +43,11 @@ export XDG_SESSION_TYPE=x11
 export XDG_SESSION_DESKTOP=xfce
 export XDG_CURRENT_DESKTOP=XFCE
 export DESKTOP_SESSION=xfce
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# A real login puts the runtime directory in /run/user/<uid>; keep that when it
+# exists and is usable, otherwise fall back inside the home directory.
+RUNTIME_DIR="/run/user/$(id -u)"
+[ -d "${RUNTIME_DIR}" ] && [ -w "${RUNTIME_DIR}" ] || RUNTIME_DIR="${HOME}/.run"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${RUNTIME_DIR}}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HOME}/.cache}"

@@ -28,7 +28,10 @@ PASSWD_FILE="${VNC_RUNTIME}/passwd"
 command -v Xtigervnc >/dev/null 2>&1 || die "Xtigervnc is not installed"
 
 [ -s "${PASSWD_FILE}" ] || die "VNC password file ${PASSWD_FILE} is missing (the entrypoint creates it)"
-[ -w "${HOME}" ] || die "home directory ${HOME} is not writable by $(id -un)"
+# Supervisord keeps root's environment: resolve the desktop user's real home
+# (HOME_DIR follows the persistent volume) instead of trusting $HOME.
+HOME="$(cloudpc_home)"
+export HOME
 
 # A private X authorization file, created if the image or volume has none.
 XAUTH="${HOME}/.Xauthority"

@@ -10,8 +10,16 @@ CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
 . "${CLOUDPC_ROOT}/lib/common.sh"
 
 echo "== services =================================================="
-supervisorctl -c "${CLOUDPC_ROOT}/supervisor/supervisord.conf" status 2>/dev/null \
-    || echo "  supervisord is not reachable"
+# supervisorctl exits non-zero whenever a program is not RUNNING - which is
+# exactly the case this report exists to show - so only an empty answer means
+# that supervisord itself is unreachable.
+if status_output="$(supervisorctl -c "${CLOUDPC_ROOT}/supervisor/supervisord.conf" status 2>&1)"; then
+    printf '%s\n' "${status_output}" | sed 's/^/  /'
+elif [ -n "${status_output}" ]; then
+    printf '%s\n' "${status_output}" | sed 's/^/  /'
+else
+    echo "  supervisord is not reachable"
+fi
 
 echo
 echo "== health ===================================================="

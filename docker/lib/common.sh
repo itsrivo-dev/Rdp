@@ -24,6 +24,30 @@ banner() {
 }
 
 # is_true <value> -- lenient boolean parsing for environment variables.
+cloudpc_home() {
+    # The desktop user's home directory.
+    #
+    # Supervisord starts the graphical programs as the desktop user but keeps
+    # the container environment, where HOME is root's - a directory that user
+    # cannot write to. HOME_DIR is exported by the entrypoint and moves to the
+    # persistent volume when one is attached, so it is the authoritative
+    # answer; the passwd database is the fallback for manual runs.
+    local dir="${HOME_DIR:-}"
+    if [ -z "${dir}" ]; then
+        dir="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "${dir}" ]; then
+        die "cannot determine the home directory of $(id -un) (HOME_DIR is unset)"
+    fi
+    if [ ! -d "${dir}" ]; then
+        mkdir -p "${dir}" 2>/dev/null || die "home directory ${dir} does not exist and cannot be created"
+    fi
+    if [ ! -w "${dir}" ]; then
+        die "home directory ${dir} is not writable by $(id -un)"
+    fi
+    printf '%s' "${dir}"
+}
+
 is_true() {
     case "${1,,}" in
         1|true|yes|y|on) return 0 ;;

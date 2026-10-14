@@ -4,6 +4,8 @@
 .gitignore
 .railway
 node_modules
+__pycache__
+*.pyc
 package.json
 package-lock.json
 tsconfig.json

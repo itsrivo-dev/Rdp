@@ -265,7 +265,10 @@ RUN set -eux; \
     chmod 0644 /var/log/cloudpc/session.log; \
     chmod 0755 /var/log/cloudpc; \
     install -d -m 0700 -o "${DESKTOP_USER}" -g "${DESKTOP_USER}" "/run/user/${DESKTOP_UID}"; \
-    chmod 0750 /opt/cloudpc/gateway /opt/cloudpc/gateway/static; \
+    # The gateway runs as the unprivileged 'cloudpc' account, so its own code
+    # must be traversable and readable by it: a 0750 directory made the
+    # gateway die with "can't open file ... Permission denied" in CI.
+    chmod 0755 /opt/cloudpc/gateway /opt/cloudpc/gateway/static; \
     python3 -m compileall -q /opt/cloudpc/gateway; \
     bash -n /opt/cloudpc/entrypoint.sh; \
     bash -n /opt/cloudpc/bin/cloudpc-vnc; \
@@ -282,7 +285,17 @@ RUN set -eux; \
     test -f /usr/share/novnc/index.html; \
     test -f /usr/share/novnc/core/rfb.js; \
     test -d /usr/share/novnc/vendor/pako; \
-    test -f /opt/cloudpc/gateway/static/login.html
+    test -f /opt/cloudpc/gateway/static/login.html; \
+    # Both service accounts are unprivileged: everything they must read has to
+    # be world readable/traversable, or the program dies with "Permission
+    # denied" a second after the container starts (seen in CI with a 0750
+    # gateway directory).
+    [ "$(stat -c '%a' /opt/cloudpc/gateway)" = "755" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/gateway/static)" = "755" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/gateway/server.py)" = "644" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/gateway/static/login.html)" = "644" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/lib/common.sh)" = "644" ]; \
+    [ "$(stat -c '%a' /opt/cloudpc/bin/cloudpc-session)" = "755" ]
 
 # -----------------------------------------------------------------------------
 # 6. ports and runtime defaults
