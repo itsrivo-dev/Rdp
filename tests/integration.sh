@@ -587,15 +587,33 @@ code="$(http_code "${BASE_URL}/health")"
 # ===========================================================================
 section "8. persistence across a container replacement"
 # ===========================================================================
-run_as_desktop "${CONTAINER}" 'echo persistence-probe > "$HOME/persist.txt"' >/dev/null 2>&1
-[ -f "${VOLUME}/home/ubuntu/persist.txt" ] && ok "the home directory lives on the volume" \
+if run_as_desktop "${CONTAINER}" 'echo persistence-probe > "$HOME/persist.txt"'; then
+    ok "a file written inside the desktop lands in its home directory"
+else
+    fail "could not write a file into the desktop home"
+fi
+
+# The volume directory is written by the container, and it is deliberately
+# closed off: .secrets is 0700 root-only and the home directory is 0750, so the
+# CI user cannot open those paths on the host at all. Inspect the host directory
+# through a throwaway container that mounts the very same directory read-only.
+volume_inspect() {  # <stat format> <path inside /data>
+    docker run --rm -v "${VOLUME}:/check:ro" --entrypoint /bin/sh "${IMAGE}" \
+        -c "stat -c '$1' '/check$2'" 2>/dev/null
+}
+volume_has() { [ -n "$(volume_inspect '%n' "$1")" ]; }
+
+volume_has /home/ubuntu/persist.txt && ok "the home directory lives on the volume" \
     || fail "the home directory is not on the volume"
-[ -f "${VOLUME}/home/ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml" ] \
+volume_has /home/ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
     && ok "the desktop configuration is persisted" || fail "the desktop configuration is not persisted"
-[ -f "${VOLUME}/.secrets/session.key" ] && ok "the session signing key is persisted" \
+volume_has /.secrets/session.key && ok "the session signing key is persisted" \
     || fail "the session key is not persisted"
-[ -f "${VOLUME}/.secrets/vnc_password" ] && ok "the VNC password is persisted" \
+volume_has /.secrets/vnc_password && ok "the VNC password is persisted" \
     || fail "the VNC password is not persisted"
+[ "$(volume_inspect '%a' /.secrets)" = "700" ] \
+    && ok "the secrets on the volume are mode 700 (root only)" \
+    || fail "the secrets on the volume are not mode 700 (got $(volume_inspect '%a' /.secrets))"
 
 docker stop -t 30 "${CONTAINER}" >/dev/null 2>&1
 CLEAN_STOPS="$(docker logs "${CONTAINER}" 2>&1 | grep -cE \
