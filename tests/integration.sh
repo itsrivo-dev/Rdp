@@ -329,8 +329,12 @@ ETAG="$(curl -s -D - -o /dev/null --max-time 15 -H "Cookie: ${COOKIE}" "${BASE_U
 code="$(http_code -H "Cookie: ${COOKIE}" -H "If-None-Match: ${ETAG}" "${BASE_URL}/vnc/app/ui.js")"
 [ "${code}" = "304" ] && ok "a conditional request returns 304" || fail "If-None-Match -> ${code} (expected 304)"
 
-if curl -s -D - -o /dev/null --max-time 20 -H "Cookie: ${COOKIE}" -H "Accept-Encoding: gzip" \
-        "${BASE_URL}/vnc/app/ui.js" | grep -qi "content-encoding: gzip"; then
+# grep -q stops reading as soon as it matches; piped into curl that closes the
+# pipe and, with `set -o pipefail`, the pipeline fails even on a match. Capture
+# the headers first and grep the captured text.
+GZIP_HEADERS="$(curl -s -D - -o /dev/null --max-time 20 -H "Cookie: ${COOKIE}" \
+    -H "Accept-Encoding: gzip" "${BASE_URL}/vnc/app/ui.js")"
+if grep -qi "content-encoding: gzip" <<<"${GZIP_HEADERS}"; then
     ok "text assets are gzipped when the client asks (mobile bandwidth)"
 else
     fail "no gzip Content-Encoding for ui.js"
@@ -558,10 +562,11 @@ if docker exec "${CONTAINER}" grep -rq "${PASSWORD}" /run/cloudpc/auth.json /run
 else
     ok "the runtime files hold hashes and metadata only"
 fi
-if docker exec "${CONTAINER}" sh -c 'stat -c %a /run/cloudpc/session.key' 2>/dev/null | grep -q "640"; then
+SESSION_KEY_MODE="$(docker exec "${CONTAINER}" sh -c 'stat -c %a /run/cloudpc/session.key' 2>/dev/null)"
+if [ "${SESSION_KEY_MODE}" = "640" ]; then
     ok "the session key is mode 640 (root:cloudpc)"
 else
-    note "unexpected session key permissions"
+    note "unexpected session key permissions (got '${SESSION_KEY_MODE}')"
 fi
 
 # ===========================================================================
@@ -687,8 +692,14 @@ fi
 curl -s --max-time 10 "http://127.0.0.1:${PORT4}/health" > "${ARTIFACTS}/health-ephemeral.json"
 [ "$(jq -r '.storage.persistent' "${ARTIFACTS}/health-ephemeral.json")" = "false" ] \
     && ok "/health reports storage as not persistent" || fail "/health wrongly claims persistence"
-docker logs "${CONTAINER}-4" 2>&1 | grep -q "WILL BE LOST" \
-    && ok "the data-loss warning is printed" || fail "no ephemeral storage warning"
+# Same pipefail trap as above: collect the log first, then grep it. The log is
+# kept as an artefact so a failure can be read without re-running CI.
+docker logs "${CONTAINER}-4" > "${ARTIFACTS}/container-4.log" 2>&1
+if grep -q "WILL BE LOST" "${ARTIFACTS}/container-4.log"; then
+    ok "the data-loss warning is printed"
+else
+    fail "no ephemeral storage warning (see container-4.log)"
+fi
 docker stop -t 30 "${CONTAINER}-4" >/dev/null 2>&1
 docker rm -f "${CONTAINER}-4" >/dev/null 2>&1
 
