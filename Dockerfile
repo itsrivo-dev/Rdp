@@ -226,8 +226,9 @@ RUN set -eux; \
         useradd -m -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash "${DESKTOP_USER}"; \
     fi; \
     usermod -aG sudo "${DESKTOP_USER}"; \
-    # The unprivileged account that runs the web gateway. -N keeps it from
-    # asking for a user-private group (which would collide with the one below).
+    # The unprivileged account that runs the web gateway. -N stops useradd from
+    # asking for a user-private group, which would collide with the group above
+    # (that collision is what made the build exit with code 9).
     if ! getent group cloudpc >/dev/null; then groupadd -r cloudpc; fi; \
     if ! id -u cloudpc >/dev/null 2>&1; then \
         useradd -r -M -N -g cloudpc -s /usr/sbin/nologin -d /nonexistent cloudpc; \
