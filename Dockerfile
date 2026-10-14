@@ -206,16 +206,39 @@ RUN set -eux; \
 #    cloudpc : unprivileged account for the web gateway
 # -----------------------------------------------------------------------------
 RUN set -eux; \
-    groupadd -g "${DESKTOP_GID}" "${DESKTOP_USER}"; \
-    useradd -m -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash "${DESKTOP_USER}"; \
+    # The desktop account. The official ubuntu images have shipped a uid/gid
+    # 1000 "ubuntu" account in some releases, so reuse whatever the base image
+    # already provides instead of making groupadd/useradd exit with "name
+    # already in use".
+    if getent group "${DESKTOP_GID}" >/dev/null; then \
+        existing_group="$(getent group "${DESKTOP_GID}" | cut -d: -f1)"; \
+        if [ "${existing_group}" != "${DESKTOP_USER}" ]; then \
+            groupmod -n "${DESKTOP_USER}" "${existing_group}"; \
+        fi; \
+    else \
+        groupadd -g "${DESKTOP_GID}" "${DESKTOP_USER}"; \
+    fi; \
+    if id -u "${DESKTOP_USER}" >/dev/null 2>&1; then \
+        usermod -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash \
+            -d "/home/${DESKTOP_USER}" "${DESKTOP_USER}"; \
+        install -d -m 0750 -o "${DESKTOP_USER}" -g "${DESKTOP_USER}" "/home/${DESKTOP_USER}"; \
+    else \
+        useradd -m -u "${DESKTOP_UID}" -g "${DESKTOP_GID}" -s /bin/bash "${DESKTOP_USER}"; \
+    fi; \
     usermod -aG sudo "${DESKTOP_USER}"; \
-    groupadd -r cloudpc; \
-    useradd -r -M -s /usr/sbin/nologin -d /nonexistent cloudpc; \
-    usermod -aG cloudpc cloudpc; \
+    # The unprivileged account that runs the web gateway. -N keeps it from
+    # asking for a user-private group (which would collide with the one below).
+    if ! getent group cloudpc >/dev/null; then groupadd -r cloudpc; fi; \
+    if ! id -u cloudpc >/dev/null 2>&1; then \
+        useradd -r -M -N -g cloudpc -s /usr/sbin/nologin -d /nonexistent cloudpc; \
+    fi; \
     install -d -m 0755 -o root -g root /opt/cloudpc /var/log/cloudpc; \
     install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix; \
     install -d -m 0755 /run/dbus; \
-    install -d -m 0755 -o root -g root /usr/share/novnc
+    install -d -m 0755 -o root -g root /usr/share/novnc; \
+    # Facts about what the base image actually contained, for the diagnostics.
+    echo "desktop account:"; id "${DESKTOP_USER}"; \
+    echo "gateway account:"; id cloudpc
 
 # -----------------------------------------------------------------------------
 # 5. project files

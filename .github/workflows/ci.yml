@@ -98,6 +98,19 @@ jobs:
             'cat /etc/os-release | head -2; python3 -V; Xtigervnc -version 2>&1 | head -1; ls /usr/share/novnc | head' \
             | tee -a image.log
 
+      - name: Base image facts (only reported when something above failed)
+        if: failure()
+        run: |
+          facts="$(docker run --rm ubuntu:22.04 sh -c '
+            echo "uid1000=$(getent passwd 1000 | cut -d: -f1)";
+            echo "gid1000=$(getent group 1000 | cut -d: -f1)";
+            echo "ubuntu=$(id -u ubuntu 2>/dev/null || echo absent)";
+            echo "cloudpc=$(id -u cloudpc 2>/dev/null || echo absent)";
+            echo "sysusers=$(getent passwd | wc -l)";
+          ' 2>&1 | tr "\n" " ")"
+          echo "::error::base image facts - ${facts}"
+          exit 1
+
       - name: Install test client dependencies
         run: |
           sudo apt-get update -qq
@@ -115,6 +128,7 @@ jobs:
       - name: Collect the report
         if: always()
         run: |
+          set +e
           {
             echo "## CI report \`${GITHUB_SHA:0:8}\` — run [#${GITHUB_RUN_NUMBER}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
@@ -150,7 +164,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Fail loudly if the desktop tests failed
-        if: steps.integration.outcome != 'success'
+        if: failure() && steps.integration.outcome == 'failure'
         run: |
           echo "::error::the end-to-end desktop tests failed - see the report above"
           exit 1
