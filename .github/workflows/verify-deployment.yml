@@ -10,7 +10,9 @@ name: verify-deployment
 # deployment after Railway has redeployed it.
 #
 # The checks and their reasoning live in tests/verify_deployment.sh; this file
-# only supplies the URL and the waiting time.
+# supplies the URL, the waiting time, and publishes the result as a comment on
+# the report issue so that it can be read without downloading anything from
+# the Actions tab.
 
 on:
   workflow_dispatch:
@@ -29,6 +31,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   verify:
@@ -58,10 +61,42 @@ jobs:
           fi
 
       - name: Check the deployed desktop
+        id: check
         if: steps.target.outputs.url != ''
         env:
           DEPLOY_URL: ${{ steps.target.outputs.url }}
           WAIT_SECONDS: ${{ inputs.wait_seconds || '300' }}
         run: |
           set -uo pipefail
-          tests/verify_deployment.sh "${DEPLOY_URL}" --wait "${WAIT_SECONDS}" | tee -a "$GITHUB_STEP_SUMMARY"
+          tests/verify_deployment.sh "${DEPLOY_URL}" --wait "${WAIT_SECONDS}" \
+            > verify-deployment.log 2>&1 || true
+          cat verify-deployment.log
+          cat verify-deployment.log >> "$GITHUB_STEP_SUMMARY"
+          # The summary line is the verdict: "passed: N  failed: 0".
+          grep -qE "^passed: [0-9]+ +failed: 0$" verify-deployment.log
+
+      - name: Publish the result (readable without downloading artefacts)
+        if: always() && steps.target.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          title="CI test reports"
+          number="$(gh issue list --state all --search "\"$title\" in:title" \
+                      --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+          if [ -z "$number" ]; then
+            number="$(gh issue create --title "$title" \
+              --body "Automated build and test reports for the Ubuntu Cloud PC image. Each comment is one CI run." \
+              | sed 's#.*/##')"
+          fi
+          {
+            echo "## Deployment check $(date -u '+%Y-%m-%dT%H:%MZ')"
+            echo
+            echo "**url:** \`${{ steps.target.outputs.url }}\`  •  **result:** \`${{ steps.check.outcome }}\`"
+            echo "**run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            cat verify-deployment.log
+            echo '```'
+          } > verify-comment.md
+          gh issue comment "$number" --body-file verify-comment.md && echo "result posted to issue #$number"
