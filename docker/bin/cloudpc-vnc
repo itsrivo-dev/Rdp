@@ -48,7 +48,8 @@ log "starting Xtigervnc on :${DISPLAY_NUM} (${RESOLUTION}, ${DEPTH} bit, port ${
 
 # -noreset        keep the desktop (and every running application) alive when
 #                 the last browser tab disconnects
-# -localhost      never listen on a public interface; the gateway proxies it
+# -localhost      never listen on a public interface (boolean flag: no value);
+#                 the gateway proxies it over loopback
 # -AlwaysShared   a second browser/tab may watch without kicking the first out
 # -rfbauth        VNC authentication stays enabled as a second layer
 exec Xtigervnc ":${DISPLAY_NUM}" \
@@ -56,7 +57,7 @@ exec Xtigervnc ":${DISPLAY_NUM}" \
     -depth "${DEPTH}" \
     -pixelformat RGB888 \
     -rfbport "${VNC_PORT}" \
-    -localhost yes \
+    -localhost \
     -rfbauth "${PASSWD_FILE}" \
     -SecurityTypes VncAuth \
     -desktop "${DESKTOP_NAME}" \

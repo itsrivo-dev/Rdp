@@ -1,6 +1,5 @@
 name: probe-tigervnc
-# Temporary diagnostic: find out which Ubuntu 22.04 package ships `vncpasswd`.
-# Deliberately fails so the listing lands in the run annotations.
+# Temporary: confirm that tigervnc-tools provides /usr/bin/vncpasswd.
 on:
   push:
     paths:
@@ -14,23 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Which package ships vncpasswd (and what else exists)?
+      - name: List the contents of the tigervnc-tools package
         run: |
           out="$(docker run --rm ubuntu:22.04 sh -c '
             apt-get update -qq >/dev/null 2>&1;
-            apt-get install -y -qq --no-install-recommends \
-              tigervnc-standalone-server tigervnc-common >/dev/null 2>&1;
-            echo "== apt-cache search tigervnc ==";
-            apt-cache search tigervnc;
-            echo "== policy tigervnc-tools ==";
-            apt-cache policy tigervnc-tools 2>/dev/null | head -4;
-            echo "== bin files installed by the two packages ==";
-            dpkg -L tigervnc-common tigervnc-standalone-server | grep -E "/bin/|passwd";
-            echo "== other candidate packages that mention vncpasswd ==";
-            for pkg in tigervnc-tools tigervnc-xorg-extension tigervnc-viewer vncpasswd; do
-              printf "%s: " "$pkg";
-              apt-cache show "$pkg" 2>/dev/null | grep -m1 "^Version:" || echo "no such package";
-            done
+            cd /tmp;
+            apt-get download tigervnc-tools >/dev/null 2>&1;
+            echo "== bin files in the tigervnc-tools .deb ==";
+            dpkg-deb -c tigervnc-tools*.deb | grep -E "/bin/|/sbin/";
+            echo "== after installing it ==";
+            apt-get install -y -qq --no-install-recommends tigervnc-tools >/dev/null 2>&1;
+            command -v vncpasswd || echo "vncpasswd STILL MISSING";
+            vncpasswd --help 2>&1 | head -3;
           ' 2>&1 | tr "\n" "|")"
           echo "::error::PROBE-${out:0:7000}"
           exit 1

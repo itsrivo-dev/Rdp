@@ -604,7 +604,7 @@ if start_container "${CONTAINER}-2" "${PORT2}" yes ""; then
 else
     fail "could not restart the container"
 fi
-if wait_for_health "${PORT2}" true 300; then
+if wait_for_health "${PORT2}" true 200; then
     ok "the desktop came back after the container replacement"
 else
     fail "the desktop did not come back"
@@ -634,7 +634,7 @@ docker exec "${CONTAINER}-2" test -f "/data/home/ubuntu/persist.txt" 2>/dev/null
 
 PORT3=$((HTTP_PORT_BASE + 2))
 docker rm -f "${CONTAINER}-2" >/dev/null 2>&1
-if start_container "${CONTAINER}-3" "${PORT3}" yes "" && wait_for_health "${PORT3}" true 300; then
+if start_container "${CONTAINER}-3" "${PORT3}" yes "" && wait_for_health "${PORT3}" true 200; then
     THIRD_PASSWORD="$(docker logs "${CONTAINER}-3" 2>&1 \
         | sed -n 's/^ *Password *: *\([A-Za-z0-9-]\{20,\}\).*$/\1/p' | head -1)"
     [ "${THIRD_PASSWORD}" = "${GENERATED_PASSWORD}" ] && ok "the password is stable across restarts" \
@@ -654,7 +654,7 @@ if start_container "${CONTAINER}-4" "${PORT4}" "" ""; then
 else
     fail "a container without a volume failed to start"
 fi
-if wait_for_health "${PORT4}" true 300; then
+if wait_for_health "${PORT4}" true 200; then
     ok "the desktop also works without a volume"
 else
     fail "the desktop did not start without a volume"

@@ -166,6 +166,9 @@ RUN set -eux; \
         libgl1-mesa-dri \
         tigervnc-standalone-server \
         tigervnc-common \
+        # tigervnc-tools is what ships vncpasswd; without it the entrypoint
+        # cannot build the VNC password file and refuses to start.
+        tigervnc-tools \
         xauth \
         x11-xserver-utils \
         x11-utils \
@@ -267,6 +270,13 @@ RUN set -eux; \
     bash -n /opt/cloudpc/entrypoint.sh; \
     bash -n /opt/cloudpc/bin/cloudpc-vnc; \
     bash -n /opt/cloudpc/bin/cloudpc-session; \
+    # Every external binary the runtime scripts call, checked at build time:
+    # a missing one otherwise only shows up when the container refuses to start.
+    for binary in Xtigervnc vncpasswd xfce4-session xfwm4 xfce4-panel xfdesktop \
+                  xfconf-query xfsettingsd xset xdotool dbus-run-session \
+                  xdg-user-dirs-update supervisorctl python3 chpasswd pgrep; do \
+        command -v "${binary}" >/dev/null || { echo "FATAL: ${binary} is missing"; exit 1; }; \
+    done; \
     # noVNC ships as ES modules with relative imports and vendored pako: no
     # bundler, no Node.js in the image, just static files.
     test -f /usr/share/novnc/index.html; \
