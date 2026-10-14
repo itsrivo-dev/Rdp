@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -140,14 +141,45 @@ jobs:
             echo '```'; tail -c 6000 lint.log 2>/dev/null; echo '```'
             echo "### end-to-end tests"
             echo '```'; tail -c 24000 integration.log 2>/dev/null; echo '```'
+            echo "### failed end-to-end checks"
+            echo '```'; grep -A40 "^failed checks:" integration.log 2>/dev/null; echo '```'
             echo "### container diagnostics"
             echo '```'; tail -c 12000 test-results/diagnostics.log 2>/dev/null; echo '```'
+            echo "### health"
+            echo '```'; cat test-results/health-volume.json 2>/dev/null | head -c 3000; echo '```'
+            echo "### probe results"
+            for probe in test-results/probe-*.json; do
+              [ -f "$probe" ] || continue
+              echo "**$probe**"
+              echo '```'; head -c 2000 "$probe"; echo '```'
+            done
             echo "### container log (tail)"
             echo '```'; tail -c 8000 test-results/container-1.log 2>/dev/null; echo '```'
             echo "### screenshots"
             echo "Artifacts contain the framebuffer captured through the web gateway."
           } > report.md
+          head -c 60000 report.md > report.trunc.md && mv report.trunc.md report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the report (readable from the API and from GitHub)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          title="CI test reports"
+          number="$(gh issue list --state all --search "\"$title\" in:title" \
+                      --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+          if [ -z "$number" ]; then
+            number="$(gh issue create --title "$title" \
+              --body "Automated build and test reports for the Ubuntu Cloud PC image. Each comment is one CI run." \
+              | sed 's#.*/##')"
+          fi
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file report.md && echo "report posted to issue #$number"
+          else
+            echo "could not find or create the report issue"
+          fi
 
       - name: Upload test artefacts (logs + screenshots of the real desktop)
         if: always()

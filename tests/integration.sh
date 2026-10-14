@@ -62,15 +62,31 @@ desktop_ready() {
 
 wait_for_health() {
     local port="$1" want_desktop="${2:-true}" tries="${3:-240}"
+    local waited=0 last_code=""
     for _ in $(seq 1 "${tries}"); do
-        if [ "$(http_code "http://127.0.0.1:${port}/health")" = "200" ]; then
+        last_code="$(http_code "http://127.0.0.1:${port}/health")"
+        if [ "${last_code}" = "200" ]; then
             if [ "${want_desktop}" = "false" ]; then
                 return 0
             fi
             desktop_ready "${port}" && return 0
         fi
+        # Progress line every ~30 s: this ends up in the CI report and shows what
+        # the desktop was doing while we waited.
+        if [ $((waited % 30)) -eq 0 ]; then
+            if [ "${last_code}" = "200" ]; then
+                printf '    [%3ss] waiting for the desktop: %s\n' "${waited}" \
+                    "$(curl -s --max-time 10 "http://127.0.0.1:${port}/health" \
+                        | jq -c '{checks, desktop, sessions_available, hints}' 2>/dev/null)"
+            else
+                printf '    [%3ss] the gateway is not answering /health yet (http %s)\n' \
+                    "${waited}" "${last_code}"
+            fi
+        fi
         sleep 2
+        waited=$((waited + 2))
     done
+    printf '    gave up after %ss waiting for the desktop\n' "${waited}"
     return 1
 }
 
@@ -89,6 +105,16 @@ dump_diagnostics() {
         docker exec "${name}" ps -eo pid,user,comm --sort=pid 2>&1 | tail -30 || true
         echo "--- cloudpc-health ---"
         docker exec "${name}" cloudpc-health 2>&1 || true
+        echo "--- cloudpc-status ---"
+        docker exec "${name}" cloudpc-status 2>&1 | head -40 || true
+        echo "--- desktop user session log ---"
+        docker exec "${name}" bash -c 'tail -40 /var/log/cloudpc/session.log 2>/dev/null' 2>&1 || true
+        echo "--- .xsession-errors ---"
+        docker exec "${name}" bash -c 'tail -30 ~ubuntu/.xsession-errors 2>/dev/null' 2>&1 || true
+        echo "--- xfce config present? ---"
+        docker exec "${name}" bash -c 'ls -la ~ubuntu/.config/xfce4/xfconf/xfce-perchannel-xml/ 2>/dev/null | head' 2>&1 || true
+        echo "--- /proc/net/tcp listeners ---"
+        docker exec "${name}" bash -c 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk "\$4 == \"0A\" {print \$2}"' 2>&1 || true
         echo
     } >> "${ARTIFACTS}/diagnostics.log" 2>&1
 }
@@ -650,6 +676,16 @@ printf 'passed: %s%d%s  failed: %s%d%s  skipped: %s%d%s\n' \
 if [ "${FAIL_COUNT}" -gt 0 ]; then
     printf '\nfailed checks:\n'
     printf '  - %s\n' "${FAILED_TESTS[@]}"
+
+    # Workflow annotations: they survive where raw logs cannot always be read
+    # (job logs live on a separate host), so put the failed checks and the tail
+    # of the container log straight into the run's annotations.
+    joined="$(printf '%s; ' "${FAILED_TESTS[@]}")"
+    printf '::error title=end-to-end failures::%s\n' "${joined}"
+    if [ -f "${ARTIFACTS}/diagnostics.log" ]; then
+        context="$(tail -25 "${ARTIFACTS}/diagnostics.log" | tr '\n' '|')"
+        printf '::warning title=container context::%s\n' "${context:0:6000}"
+    fi
     exit 1
 fi
 exit 0
