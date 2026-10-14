@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  cloudpc-apply-defaults - re-assert the Cloud PC desktop defaults.
+#
+#  Started automatically inside every XFCE session (see the autostart entry in
+#  skel/). It exists because a few settings are nicer applied at runtime than
+#  shipped as XML:
+#
+#    * keyboard shortcuts that are used constantly from a phone/tablet
+#    * a flat, solid desktop background (cheap to compress over a phone link)
+#    * one workspace, no compositor, Adwaita-dark - less RAM, less bandwidth
+#
+#  Every step is idempotent and non-fatal: a missing property never breaks the
+#  session.
+# =============================================================================
+set -uo pipefail
+
+CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
+# shellcheck source=../lib/common.sh
+. "${CLOUDPC_ROOT}/lib/common.sh"
+
+export DISPLAY="${DISPLAY:-:1}"
+
+# Wait for xfconfd (it is started by xfce4-session, which started us).
+for _ in $(seq 1 60); do
+    if xfconf-query -c xfce4-keyboard-shortcuts -l >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+# set_prop <channel> <property> <type> <value>
+set_prop() {
+    local channel="$1" property="$2" type="$3" value="$4"
+    if xfconf-query -c "${channel}" -p "${property}" >/dev/null 2>&1; then
+        xfconf-query -c "${channel}" -p "${property}" -t "${type}" -s "${value}" >/dev/null 2>&1 \
+            || warn "could not set ${channel}${property}"
+    else
+        xfconf-query -c "${channel}" -p "${property}" -t "${type}" -s "${value}" -n >/dev/null 2>&1 \
+            || warn "could not create ${channel}${property}"
+    fi
+}
+
+# --- application shortcuts ---------------------------------------------------
+set_prop xfce4-keyboard-shortcuts "/commands/custom/<Primary><Alt>t" string "xfce4-terminal"
+set_prop xfce4-keyboard-shortcuts "/commands/custom/<Primary><Alt>f" string "thunar"
+set_prop xfce4-keyboard-shortcuts "/commands/custom/<Primary><Alt>e" string "mousepad"
+set_prop xfce4-keyboard-shortcuts "/commands/custom/Print" string "xfce4-screenshooter -f"
+# Close the focused window with Ctrl+Alt+W: the window title bar is a small
+# target on a phone, and the keyboard is right there in the noVNC control bar.
+set_prop xfce4-keyboard-shortcuts "/commands/custom/<Primary><Alt>w" string "xdotool getactivewindow windowkill"
+
+# --- window manager ----------------------------------------------------------
+set_prop xfwm4 /general/use_compositing bool false
+set_prop xfwm4 /general/workspace_count int 1
+set_prop xfwm4 /general/snap_to_border bool true
+set_prop xfwm4 /general/snap_to_windows bool true
+set_prop xfwm4 /general/focus_new bool true
+set_prop xfwm4 /general/click_to_focus bool true
+set_prop xfwm4 /general/box_move bool true
+set_prop xfwm4 /general/box_resize bool true
+set_prop xfwm4 /general/cycle_workspaces bool false
+set_prop xfwm4 /general/title_alignment string "center"
+
+# --- appearance --------------------------------------------------------------
+set_prop xsettings /Net/ThemeName string "Adwaita-dark"
+set_prop xsettings /Net/IconThemeName string "Adwaita"
+set_prop xsettings /Gtk/FontName string "Sans 10"
+set_prop xsettings /Gtk/MonospaceFontName string "Monospace 10"
+set_prop xsettings /Xft/Antialias int 1
+set_prop xsettings /Xft/Hinting int 1
+set_prop xsettings /Xft/RGBA string "rgb"
+
+# --- session -----------------------------------------------------------------
+set_prop xfce4-session /general/SaveOnExit bool false
+set_prop xfce4-session /general/ConfirmLogout bool false
+set_prop xfce4-session /shutdown/LockScreen bool false
+set_prop xfce4-session /splash/Engine string ""      # no splash screen: it costs bandwidth
+
+# --- keyboard ----------------------------------------------------------------
+set_prop keyboard-layouts /Default/XkbDisable bool false
+
+# --- desktop background: a flat colour instead of a photographic wallpaper ---
+set_backdrop() {
+    local prop base found=0
+    while IFS= read -r prop; do
+        case "${prop}" in
+            */workspace*/last-image)
+                base="${prop%/last-image}"
+                set_prop xfce4-desktop "${base}/image-style" int 0
+                xfconf-query -c xfce4-desktop -p "${base}/last-image" -s "" >/dev/null 2>&1 \
+                    || xfconf-query -c xfce4-desktop -p "${base}/last-image" -t string -s "" -n >/dev/null 2>&1 \
+                    || true
+                set_prop xfce4-desktop "${base}/rgba1" double 0.17
+                local rgba
+                rgba=$(xfconf-query -c xfce4-desktop -p "${base}/rgba1" 2>/dev/null | head -1)
+                if [ -z "${rgba}" ]; then
+                    xfconf-query -c xfce4-desktop -p "${base}/rgba1" \
+                        -t double -t double -t double -t double \
+                        -s 0.17 -s 0.0 -s 0.12 -s 1.0 -n >/dev/null 2>&1 || true
+                fi
+                found=1
+                ;;
+        esac
+    done < <(xfconf-query -c xfce4-desktop -l 2>/dev/null || true)
+
+    if [ "${found}" -eq 0 ]; then
+        xfconf-query -c xfce4-desktop -p /backdrop/screen0/monitor0/workspace0 \
+            -t double -t double -t double -t double -s 0.17 -s 0.0 -s 0.12 -s 1.0 -n >/dev/null 2>&1 || true
+        set_prop xfce4-desktop /backdrop/screen0/monitor0/workspace0/image-style int 0
+    fi
+}
+
+# Fade the settings in so the desktop is repainted once everything is applied.
+set_backdrop
+
+xfsettingsd --replace >/dev/null 2>&1 &
+sleep 1
+
+log "desktop defaults applied"
+exit 0

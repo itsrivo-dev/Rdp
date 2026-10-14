@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Single-shot health probe.
-#   exit 0 -> RDP is accepting connections and the session manager is up
-#   exit 1 -> not healthy (used by Docker HEALTHCHECK and the watchdog)
-# Usage: cloudpc-health [--quiet] [--json]
+# =============================================================================
+#  cloudpc-health - single-shot health probe.
+#
+#    exit 0 -> the web gateway is serving and the display server is listening
+#    exit 1 -> something needed for a usable desktop is down
+#
+#  Used by the Docker/Railway healthcheck, the watchdog and the test suite.
+#
+#  Options:
+#    --quiet     no output, exit code only
+#    --json      machine readable output
+#    --strict    also require a running XFCE session (not just the display)
+# =============================================================================
 set -uo pipefail
 
 CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
@@ -11,29 +20,42 @@ CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
 
 QUIET=false
 JSON=false
+STRICT=false
 for arg in "$@"; do
-    case "$arg" in
-        -q|--quiet) QUIET=true ;;
-        -j|--json)  JSON=true ;;
-        -h|--help)  echo "usage: cloudpc-health [--quiet] [--json]"; exit 0 ;;
+    case "${arg}" in
+        -q|--quiet)  QUIET=true ;;
+        -j|--json)   JSON=true ;;
+        -s|--strict) STRICT=true ;;
+        -h|--help)   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown option: ${arg}" >&2; exit 2 ;;
     esac
 done
 
-RDP_PORT="${RDP_PORT:-3389}"
 HTTP_PORT="${PORT:-8080}"
+VNC_PORT="${VNC_PORT:-5900}"
+desktop_user="${DESKTOP_USER:-ubuntu}"
 
 rc=0
-status_rdp=ok;    port_listening "${RDP_PORT}"  || { status_rdp=down; rc=1; }
-status_sesman=ok; port_listening 3350           || { status_sesman=down; rc=1; }
-status_http=ok;   port_listening "${HTTP_PORT}" || status_http=down
+status_gateway=ok
+http_ok "${HTTP_PORT}" /health                 || { status_gateway=down;   rc=1; }
+status_vnc=ok
+port_listening "${VNC_PORT}"                   || { status_vnc=down;       rc=1; }
+status_bus=ok
+[ -S /run/dbus/system_bus_socket ]             || status_bus=down
+status_session=ok
+if ! pgrep -u "${desktop_user}" -x xfce4-session >/dev/null 2>&1; then
+    status_session=starting
+    [ "${STRICT}" = true ] && rc=1
+fi
 
 if [ "${JSON}" = true ]; then
-    printf '{"rdp":"%s","sesman":"%s","http":"%s","healthy":%s}\n' \
-        "${status_rdp}" "${status_sesman}" "${status_http}" \
+    printf '{"gateway":"%s","vnc":"%s","dbus":"%s","session":"%s","healthy":%s}\n' \
+        "${status_gateway}" "${status_vnc}" "${status_bus}" "${status_session}" \
         "$([ "${rc}" -eq 0 ] && echo true || echo false)"
 elif [ "${QUIET}" != true ]; then
-    printf 'rdp(%s)=%s  sesman(3350)=%s  http(%s)=%s\n' \
-        "${RDP_PORT}" "${status_rdp}" "${status_sesman}" "${HTTP_PORT}" "${status_http}"
+    printf 'gateway(%s)=%s  vnc(%s)=%s  dbus=%s  session=%s\n' \
+        "${HTTP_PORT}" "${status_gateway}" "${VNC_PORT}" "${status_vnc}" \
+        "${status_bus}" "${status_session}"
 fi
 
 exit "${rc}"

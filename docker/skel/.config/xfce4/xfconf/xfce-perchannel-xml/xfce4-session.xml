@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- No logout confirmation dialogs and no session saving: the desktop is
-     meant to stay exactly as you left it between RDP reconnects. -->
+<!--
+    No logout confirmation and no session saving: the desktop stays exactly as
+    it is left, so that closing the browser (or losing mobile data) and coming
+    back later lands you in the same session with the same windows open.
+-->
 <channel name="xfce4-session" version="1.0">
   <property name="general" type="empty">
     <property name="FailsafeSessionName" type="string" value="Failsafe"/>
@@ -19,11 +22,14 @@
   </property>
   <property name="startup" type="empty">
     <property name="ssh-agent" type="empty">
-      <property name="enabled" type="bool" value="true"/>
-      <property name="type" type="string" value="ssh-agent"/>
+      <property name="enabled" type="bool" value="false"/>
     </property>
     <property name="gpg-agent" type="empty">
       <property name="enabled" type="bool" value="false"/>
     </property>
+  </property>
+  <property name="splash" type="empty">
+    <!-- No splash screen: it only costs bandwidth before the desktop appears. -->
+    <property name="Engine" type="string" value=""/>
   </property>
 </channel>

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  cloudpc-vnc - the display server (TigerVNC Xtigervnc) supervisor program.
+#
+#  Runs as the unprivileged desktop user. Xtigervnc is both the X server and
+#  the VNC server for the desktop: XFCE renders to it, and the web gateway
+#  connects to it over loopback TCP.
+#
+#  Security posture: the VNC listener is bound to 127.0.0.1 (-localhost) and
+#  still requires VNC authentication, so the only way to reach it from the
+#  internet is through the authenticated web gateway.
+# =============================================================================
+set -Eeuo pipefail
+
+CLOUDPC_ROOT="${CLOUDPC_ROOT:-/opt/cloudpc}"
+# shellcheck source=../lib/common.sh
+. "${CLOUDPC_ROOT}/lib/common.sh"
+
+DISPLAY_NUM="${DESKTOP_DISPLAY:-1}"
+VNC_PORT="${VNC_PORT:-5900}"
+RESOLUTION="${DESKTOP_RESOLUTION:-1280x720}"
+DEPTH="${DESKTOP_DEPTH:-24}"
+FRAME_RATE="${VNC_FRAME_RATE:-30}"
+DESKTOP_NAME="${DESKTOP_NAME:-Ubuntu Cloud Desktop}"
+VNC_RUNTIME="${CLOUDPC_VNC_RUNTIME:-/run/cloudpc/vnc}"
+PASSWD_FILE="${VNC_RUNTIME}/passwd"
+
+command -v Xtigervnc >/dev/null 2>&1 || die "Xtigervnc is not installed"
+
+[ -s "${PASSWD_FILE}" ] || die "VNC password file ${PASSWD_FILE} is missing (the entrypoint creates it)"
+[ -w "${HOME}" ] || die "home directory ${HOME} is not writable by $(id -un)"
+
+# A private X authorization file, created if the image or volume has none.
+XAUTH="${HOME}/.Xauthority"
+if [ ! -f "${XAUTH}" ]; then
+    umask 077
+    : > "${XAUTH}"
+fi
+chmod 0600 "${XAUTH}" 2>/dev/null || true
+
+# Stale display artifacts from an unclean shutdown would stop X from starting.
+if [ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ] && ! port_listening "${VNC_PORT}"; then
+    warn "removing stale X socket for display :${DISPLAY_NUM}"
+    rm -f "/tmp/.X11-unix/X${DISPLAY_NUM}" "/tmp/.X${DISPLAY_NUM}-lock" 2>/dev/null || true
+fi
+
+log "starting Xtigervnc on :${DISPLAY_NUM} (${RESOLUTION}, ${DEPTH} bit, port ${VNC_PORT})"
+
+# -noreset        keep the desktop (and every running application) alive when
+#                 the last browser tab disconnects
+# -localhost      never listen on a public interface; the gateway proxies it
+# -AlwaysShared   a second browser/tab may watch without kicking the first out
+# -rfbauth        VNC authentication stays enabled as a second layer
+exec Xtigervnc ":${DISPLAY_NUM}" \
+    -geometry "${RESOLUTION}" \
+    -depth "${DEPTH}" \
+    -pixelformat RGB888 \
+    -rfbport "${VNC_PORT}" \
+    -localhost yes \
+    -rfbauth "${PASSWD_FILE}" \
+    -SecurityTypes VncAuth \
+    -desktop "${DESKTOP_NAME}" \
+    -AlwaysShared \
+    -FrameRate "${FRAME_RATE}" \
+    -CompareFB 2 \
+    -MaxDisconnectionTime 0 \
+    -BlacklistThreshold 10 \
+    -BlacklistTimeout 5 \
+    -auth "${XAUTH}" \
+    -noreset \
+    -nolisten tcp

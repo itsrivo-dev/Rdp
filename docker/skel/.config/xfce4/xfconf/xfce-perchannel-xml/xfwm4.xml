@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Window manager defaults tuned for a remote (RDP) desktop:
-     compositing off = far less bandwidth and CPU, no visual tearing. -->
+<!--
+    Window manager defaults for a desktop that is watched through a browser:
+
+      * compositing off      - no per-frame CPU cost and less traffic to send
+      * one workspace        - a phone screen shows exactly one desktop
+      * click to focus       - clicking a window raises it, which is how touch
+                               input is normally interpreted
+-->
 <channel name="xfwm4" version="1.0">
   <property name="general" type="empty">
     <property name="theme" type="string" value="Default"/>
@@ -13,6 +19,7 @@
     <property name="snap_to_border" type="bool" value="true"/>
     <property name="snap_to_windows" type="bool" value="true"/>
     <property name="wrap_workspaces" type="bool" value="false"/>
-    <property name="workspace_count" type="int" value="2"/>
+    <property name="cycle_workspaces" type="bool" value="false"/>
+    <property name="workspace_count" type="int" value="1"/>
   </property>
 </channel>

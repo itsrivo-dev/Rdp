@@ -1,14 +1,54 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    A flat background colour instead of the stock photographic wallpaper: a
+    single-colour region costs almost nothing to send over a phone connection,
+    while a photo wallpaper is redrawn in full every time the desktop repaints.
+
+    Ubuntu aubergine (#2C001E) is expressed as the rgba1 property. The
+    cloudpc-apply-defaults script re-applies this at every login for whichever
+    monitor names the display server happens to produce.
+-->
 <channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor0" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="0"/>
+          <property name="last-image" type="string" value=""/>
+          <property name="rgba1" type="array">
+            <value type="double" value="0.172549019608"/>
+            <value type="double" value="0.0"/>
+            <value type="double" value="0.117647058824"/>
+            <value type="double" value="1.0"/>
+          </property>
+        </property>
+      </property>
+      <property name="monitorVNC-0" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="0"/>
+          <property name="last-image" type="string" value=""/>
+          <property name="rgba1" type="array">
+            <value type="double" value="0.172549019608"/>
+            <value type="double" value="0.0"/>
+            <value type="double" value="0.117647058824"/>
+            <value type="double" value="1.0"/>
+          </property>
+        </property>
+      </property>
+    </property>
+  </property>
   <property name="desktop-icons" type="empty">
+    <!-- Show the home folder and the welcome file on the desktop. -->
     <property name="style" type="int" value="2"/>
+    <property name="icon-size" type="uint" value="40"/>
     <property name="file-icons" type="empty">
       <property name="show-home" type="bool" value="true"/>
       <property name="show-filesystem" type="bool" value="false"/>
       <property name="show-trash" type="bool" value="true"/>
       <property name="show-removable" type="bool" value="false"/>
     </property>
-    <property name="icon-size" type="uint" value="40"/>
   </property>
   <property name="desktop-menu" type="empty">
     <property name="show-icons" type="bool" value="true"/>

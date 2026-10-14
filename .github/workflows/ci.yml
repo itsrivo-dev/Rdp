@@ -5,49 +5,83 @@ on:
     branches: ["**"]
     paths-ignore:
       - "**/*.md"
-      - "LICENSE"
+      - LICENSE
   pull_request:
   workflow_dispatch:
-    inputs:
-      keep_logs:
-        description: "Attach the full container log to the report"
-        type: boolean
-        default: true
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: build image and run the full test suite
+  static:
+    name: static checks and unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install test dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            freerdp2-x11 xvfb jq shellcheck netcat-openbsd
-          xfreerdp --version | head -2 || true
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends shellcheck
 
       - name: Static checks
-        id: lint
         run: |
           set -o pipefail
-          chmod +x tests/*.sh scripts/*.sh docker/entrypoint.sh docker/bin/* docker/xrdp/*.sh
+          chmod +x tests/*.sh scripts/*.sh docker/entrypoint.sh docker/bin/* 2>/dev/null || true
           tests/lint.sh 2>&1 | tee lint.log
+
+      - name: Unit tests (WebSocket framing, sessions, password hashing, throttling)
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s tests/unit -v 2>&1 | tee unit.log
+
+      - name: Build the icons (the same tool the Docker build runs)
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/icon-check
+          python3 docker/tools/make_icons.py /tmp/icon-check | tee -a lint.log
+
+      - name: Gateway smoke test (real server, stand-in VNC, no Docker)
+        run: |
+          set -o pipefail
+          python3 -m pip install --quiet --break-system-packages websocket-client \
+            || python3 -m pip install --quiet --user websocket-client
+          curl -fsSL --retry 3 -o /tmp/novnc.tar.gz \
+            https://github.com/novnc/noVNC/archive/refs/tags/v1.7.0.tar.gz
+          echo "b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6  /tmp/novnc.tar.gz" \
+            | sha256sum -c -
+          mkdir -p /tmp/novnc
+          tar -xzf /tmp/novnc.tar.gz -C /tmp/novnc --strip-components=1
+          python3 docker/tools/build_novnc_page.py /tmp/novnc
+          python3 tests/gateway_smoke.py --novnc-dir /tmp/novnc 2>&1 | tee smoke.log
+
+      - name: Upload static check logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-results-${{ github.run_number }}
+          path: |
+            lint.log
+            unit.log
+            smoke.log
+          retention-days: 7
+          if-no-files-found: warn
+
+  image:
+    name: docker build and end-to-end desktop tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    needs: static
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image
+      - name: Build the image Railway will build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -60,77 +94,63 @@ jobs:
         run: |
           docker image inspect cloudpc:test \
             --format 'size: {{.Size}} bytes ({{div .Size 1048576}} MB) / layers: {{len .RootFS.Layers}}' | tee image.log
-          docker history cloudpc:test --human --format '{{.Size}}\t{{.CreatedBy}}' | head -20 >> image.log
+          docker run --rm --entrypoint /bin/sh cloudpc:test -c \
+            'cat /etc/os-release | head -2; python3 -V; Xtigervnc -version 2>&1 | head -1; ls /usr/share/novnc | head' \
+            | tee -a image.log
 
-      - name: Integration tests
+      - name: Install test client dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends jq curl
+          python3 -m pip install --quiet --break-system-packages websocket-client pycryptodome Pillow \
+            || python3 -m pip install --quiet --user websocket-client pycryptodome Pillow
+          python3 -c "import websocket, Crypto, PIL; print('probe dependencies ready')"
+
+      - name: End-to-end tests (login, noVNC assets, real desktop, input, clipboard, persistence)
         id: integration
         run: |
           set -o pipefail
           tests/integration.sh cloudpc:test 2>&1 | tee integration.log
 
-      - name: Collect report
+      - name: Collect the report
         if: always()
         run: |
           {
             echo "## CI report \`${GITHUB_SHA:0:8}\` — run [#${GITHUB_RUN_NUMBER}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
-            echo "**status:** \`${{ job.status }}\`  •  **lint:** \`${{ steps.lint.outcome }}\`  •  **integration:** \`${{ steps.integration.outcome }}\`"
+            echo "**static:** \`${{ needs.static.result }}\`  •  **image + e2e:** \`${{ steps.integration.outcome }}\`"
             echo
             echo "### image"
-            echo '```'
-            cat image.log 2>/dev/null | head -25
-            echo '```'
+            echo '```'; head -c 3000 image.log 2>/dev/null; echo '```'
             echo "### static checks"
-            echo '```'
-            tail -c 8000 lint.log 2>/dev/null
-            echo '```'
-            echo "### integration tests"
-            echo '```'
-            tail -c 26000 integration.log 2>/dev/null
-            echo '```'
+            echo '```'; tail -c 6000 lint.log 2>/dev/null; echo '```'
+            echo "### end-to-end tests"
+            echo '```'; tail -c 24000 integration.log 2>/dev/null; echo '```'
+            echo "### container diagnostics"
+            echo '```'; tail -c 12000 test-results/diagnostics.log 2>/dev/null; echo '```'
             echo "### container log (tail)"
-            echo '```'
-            tail -c 14000 test-results/container.log 2>/dev/null
-            echo '```'
-            echo "### xrdp-sesman log (tail)"
-            echo '```'
-            tail -c 6000 test-results/xrdp-sesman.log 2>/dev/null
-            echo '```'
-            echo "### rdp client log (tail)"
-            echo '```'
-            tail -c 4000 test-results/rdp-client-1.log 2>/dev/null
-            echo '```'
+            echo '```'; tail -c 8000 test-results/container-1.log 2>/dev/null; echo '```'
+            echo "### screenshots"
+            echo "Artifacts contain the framebuffer captured through the web gateway."
           } > report.md
-          # GitHub comments are limited to 65536 characters.
-          head -c 64000 report.md > report.trunc.md
-          mv report.trunc.md report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish report
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          title="CI test reports"
-          number="$(gh issue list --state all --search "\"$title\" in:title" \
-                      --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
-          if [ -z "$number" ]; then
-            number="$(gh issue create --title "$title" \
-              --body "Automated build and test reports for the Ubuntu Cloud PC image. Each comment is one CI run." \
-              | sed 's#.*/##')"
-          fi
-          gh issue comment "$number" --body-file report.md
-          echo "report posted to issue #$number"
-
-      - name: Upload artifacts
+      - name: Upload test artefacts (logs + screenshots of the real desktop)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ github.run_number }}
           path: |
             lint.log
-            integration.log
+            unit.log
             image.log
+            integration.log
             test-results/
-          retention-days: 7
+          retention-days: 14
           if-no-files-found: warn
+
+      - name: Fail loudly if the desktop tests failed
+        if: steps.integration.outcome != 'success'
+        run: |
+          echo "::error::the end-to-end desktop tests failed - see the report above"
+          exit 1

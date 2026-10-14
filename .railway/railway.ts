@@ -1,32 +1,29 @@
-/**
- * Railway Infrastructure as Code - Ubuntu Cloud PC
- * ---------------------------------------------------------------------------
- * One `railway config apply` creates everything this project needs:
- *
- *   - the service, built from this repository's Dockerfile
- *   - a persistent volume mounted at /data (your home directory)
- *   - a public TCP proxy for port 3389, which is how RDP reaches the desktop
- *   - the /health healthcheck and an always-on restart policy
- *
- * Usage (see README.md for the full walkthrough):
- *
- *   npm install
- *   railway login
- *   railway link          # or: railway init
- *   railway config plan   # review
- *   railway config apply
- *
- * Nothing secret lives in this file. The RDP password is generated inside the
- * container at first boot and printed to the (private) deploy logs.
- *
- * Forked the repo or named the service differently? Set the environment
- * variables below before running the CLI - no edits to this file needed:
- *   CLOUD_PC_REPO=<owner>/<repo>  CLOUD_PC_SERVICE=<service name>
- *   CLOUD_PC_VOLUME_MB=<size>     CLOUD_PC_BRANCH=<branch>
- */
+# =============================================================================
+#  Railway infrastructure for the Ubuntu Cloud PC.
+#
+#  This file is evaluated by the **Railway CLI** (`railway config apply`), not
+#  during a deploy. It is optional: the GitHub deployment path only needs the
+#  Dockerfile in this repository (see README.md).
+#
+#  What it declares:
+#    * one service, built from ./Dockerfile
+#    * a persistent volume mounted at /data (home directory, password, session
+#      key - everything that must survive a redeploy)
+#    * the /health healthcheck and an always-on restart policy
+#
+#  Nothing secret lives here, and no credentials are required for it to work:
+#  the deployment works with the defaults in the container.
+#
+#  Forked the repo or named the service differently? Set these before running
+#  the CLI - no edits to this file needed:
+#
+#    CLOUD_PC_REPO=<owner>/<repo>   CLOUD_PC_BRANCH=<branch>
+#    CLOUD_PC_SERVICE=<name>        CLOUD_PC_PROJECT=<project>
+#    CLOUD_PC_VOLUME_MB=<size>
+# =============================================================================
 import { defineRailway, github, project, service, volume } from "railway/iac";
 
-/** Only manage this project's own resources, never anything else in the environment. */
+/** Only ever manage this project's own resources. */
 export const partial = "ubuntu-cloud-pc";
 
 const REPO = process.env.CLOUD_PC_REPO ?? "itsrivo-dev/Rdp";
@@ -34,16 +31,16 @@ const BRANCH = process.env.CLOUD_PC_BRANCH ?? "main";
 const SERVICE_NAME = process.env.CLOUD_PC_SERVICE ?? "Rdp";
 const VOLUME_MB = Number(process.env.CLOUD_PC_VOLUME_MB ?? 5120);
 
-/** Internal container ports. Keep in sync with the Dockerfile. */
-const RDP_PORT = 3389;
+/** Keep in sync with the Dockerfile / entrypoint defaults. */
 const HTTP_PORT = 8080;
+const DATA_DIR = "/data";
 
 export default defineRailway(() => {
-  const data = volume("cloud-pc-data", {
+  const desktopData = volume("cloudpc-data", {
     sizeMB: VOLUME_MB,
   });
 
-  const cloudPc = service(SERVICE_NAME, {
+  const desktop = service(SERVICE_NAME, {
     source: github(REPO, { branch: BRANCH }),
 
     build: {
@@ -51,11 +48,8 @@ export default defineRailway(() => {
       dockerfilePath: "Dockerfile",
     },
 
-    // Public RDP endpoint: Railway generates <name>.proxy.rlwy.net:<port>
-    // and forwards it to container port 3389.
-    tcp: [RDP_PORT],
-
-    // Readiness probe served by the container's status server.
+    // The only public endpoint: the HTTPS web gateway. Railway injects PORT
+    // into the container, so the gateway always listens where Railway expects.
     healthcheck: "/health",
     healthcheckTimeout: 300,
 
@@ -65,20 +59,22 @@ export default defineRailway(() => {
       numReplicas: 1,
     },
 
-    // Home directory + generated credentials + TLS material live here, so the
-    // desktop survives restarts and redeploys.
+    // Home directory, generated password and session signing key live here, so
+    // the desktop and the logins survive restarts and redeploys.
     volumeMounts: {
-      "/data": data,
+      [DATA_DIR]: desktopData,
     },
 
     env: {
-      // Tells Railway which port serves HTTP (the healthcheck target) while
-      // the TCP proxy handles 3389. Everything else has a built-in default.
       PORT: String(HTTP_PORT),
+      // Sensible defaults for Railway-sized containers. Override in the
+      // dashboard if your plan has more memory (e.g. 1600x900).
+      DESKTOP_RESOLUTION: "1280x720",
+      VNC_FRAME_RATE: "30",
     },
   });
 
   return project(process.env.CLOUD_PC_PROJECT ?? "ubuntu-cloud-pc", {
-    resources: [cloudPc, data],
+    resources: [desktop, desktopData],
   });
 });

@@ -1,22 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    GTK/Xft defaults. Adwaita-dark looks right on a phone at low brightness and
+    compresses well (large flat areas). Anti-aliasing is left on: Modern
+    subpixel smoothing costs a little bandwidth but text is what a remote
+    desktop is read from.
+-->
 <channel name="xsettings" version="1.0">
   <property name="Net" type="empty">
-    <property name="ThemeName" type="string" value="Adwaita"/>
+    <property name="ThemeName" type="string" value="Adwaita-dark"/>
     <property name="IconThemeName" type="string" value="Adwaita"/>
     <property name="EnableEventSounds" type="bool" value="false"/>
     <property name="EnableInputFeedbackSounds" type="bool" value="false"/>
+    <property name="CursorThemeName" type="string" value="Adwaita"/>
   </property>
   <property name="Xft" type="empty">
     <property name="Antialias" type="int" value="1"/>
     <property name="Hinting" type="int" value="1"/>
     <property name="HintStyle" type="string" value="hintslight"/>
-    <property name="RGBA" type="string" value="none"/>
+    <property name="RGBA" type="string" value="rgb"/>
     <property name="DPI" type="int" value="96"/>
   </property>
   <property name="Gtk" type="empty">
     <property name="FontName" type="string" value="Sans 10"/>
     <property name="MonospaceFontName" type="string" value="Monospace 10"/>
-    <property name="CursorThemeName" type="string" value="Adwaita"/>
     <property name="DecorationLayout" type="string" value="menu:minimize,maximize,close"/>
+    <property name="DialogsUseHeader" type="bool" value="false"/>
   </property>
 </channel>
