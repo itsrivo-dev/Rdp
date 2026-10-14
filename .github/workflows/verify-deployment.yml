@@ -31,12 +31,16 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   verify:
     name: check the live deployment
     runs-on: ubuntu-latest
+    # issues: write only for the step that publishes the result; the check
+    # itself just reads the URL.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 

@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -22,6 +21,10 @@ jobs:
     name: static checks and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Only this workflow's image job writes to the repository (it comments on
+    # the report issue); checking out code is all the static job needs.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -48,8 +51,10 @@ jobs:
       - name: Gateway smoke test (real server, stand-in VNC, no Docker)
         run: |
           set -o pipefail
-          python3 -m pip install --quiet --break-system-packages websocket-client \
-            || python3 -m pip install --quiet --user websocket-client
+          # websocket-client for the gateway smoke test, PyYAML for the
+          # workflow structure tests (tests/unit/test_workflows.py).
+          python3 -m pip install --quiet --break-system-packages websocket-client pyyaml \
+            || python3 -m pip install --quiet --user websocket-client pyyaml
           curl -fsSL --retry 3 -o /tmp/novnc.tar.gz \
             https://github.com/novnc/noVNC/archive/refs/tags/v1.7.0.tar.gz
           echo "b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6  /tmp/novnc.tar.gz" \
@@ -74,6 +79,9 @@ jobs:
   image:
     name: docker build and end-to-end desktop tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 75
     needs: static
     steps:
