@@ -1,0 +1,36 @@
+name: probe-tigervnc
+# Temporary diagnostic: find out which Ubuntu 22.04 package ships `vncpasswd`.
+# Deliberately fails so the listing lands in the run annotations.
+on:
+  push:
+    paths:
+      - ".github/workflows/probe-tigervnc.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Which package ships vncpasswd (and what else exists)?
+        run: |
+          out="$(docker run --rm ubuntu:22.04 sh -c '
+            apt-get update -qq >/dev/null 2>&1;
+            apt-get install -y -qq --no-install-recommends \
+              tigervnc-standalone-server tigervnc-common >/dev/null 2>&1;
+            echo "== apt-cache search tigervnc ==";
+            apt-cache search tigervnc;
+            echo "== policy tigervnc-tools ==";
+            apt-cache policy tigervnc-tools 2>/dev/null | head -4;
+            echo "== bin files installed by the two packages ==";
+            dpkg -L tigervnc-common tigervnc-standalone-server | grep -E "/bin/|passwd";
+            echo "== other candidate packages that mention vncpasswd ==";
+            for pkg in tigervnc-tools tigervnc-xorg-extension tigervnc-viewer vncpasswd; do
+              printf "%s: " "$pkg";
+              apt-cache show "$pkg" 2>/dev/null | grep -m1 "^Version:" || echo "no such package";
+            done
+          ' 2>&1 | tr "\n" "|")"
+          echo "::error::PROBE-${out:0:7000}"
+          exit 1
