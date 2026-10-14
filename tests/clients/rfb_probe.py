@@ -436,6 +436,9 @@ def main() -> int:
     parser.add_argument("--clipboard", default="", help="send this text as the client clipboard")
     parser.add_argument("--read-clipboard", action="store_true",
                         help="print the desktop clipboard (ServerCutText)")
+    parser.add_argument("--pause", type=float, default=0.0,
+                        help="seconds to wait after clicking/pressing keys and before "
+                             "typing (opening a terminal takes a moment)")
     parser.add_argument("--settle", type=float, default=1.5,
                         help="seconds to wait after input before the second screenshot")
     parser.add_argument("--json", action="store_true", help="machine readable summary")
@@ -464,6 +467,8 @@ def main() -> int:
                 client.click(int(x), int(y))
             for combo in args.combo:
                 client.combo(*combo.split("-"))
+            if args.pause > 0:
+                time.sleep(args.pause)
             if args.text:
                 client.type_text(args.text)
             if args.clipboard:

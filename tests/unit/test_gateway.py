@@ -326,8 +326,8 @@ class ThrottleTests(unittest.TestCase):
 class ConstantTimeTests(unittest.TestCase):
     def test_compare_digest_is_used_for_hashes(self):
         # Guards against a regression to "==" comparisons on secrets.
-        source = open(os.path.join(REPO, "docker", "gateway", "security.py"),
-                      encoding="utf-8").read()
+        with open(os.path.join(REPO, "docker", "gateway", "security.py"), encoding="utf-8") as handle:
+            source = handle.read()
         self.assertIn("hmac.compare_digest", source)
         self.assertNotIn("hash == ", source)
         self.assertTrue(hmac.compare_digest(b"a", b"a"))

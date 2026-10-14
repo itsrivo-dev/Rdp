@@ -390,7 +390,8 @@ PY
     PROOF="/tmp/cloudpc-input-proof-$(date +%s)"
     docker exec "${CONTAINER}" rm -f "${PROOF}" >/dev/null 2>&1
     TERMINAL_OPEN=0
-    if probe "${WS_URL}" --combo ctrl-alt-t --settle 4 --json > "${ARTIFACTS}/probe-2.json" 2>&1; then
+    if probe "${WS_URL}" --combo ctrl-alt-t --pause 6 --settle 3 --json \
+            > "${ARTIFACTS}/probe-2.json" 2>&1; then
         for _ in $(seq 1 10); do
             window_exists "${CONTAINER}" xfce4-terminal && { TERMINAL_OPEN=1; break; }
             sleep 1
@@ -401,7 +402,8 @@ PY
 
     if [ "${TERMINAL_OPEN}" = "0" ]; then
         for x in 78 100 60 120 45; do
-            probe "${WS_URL}" --click "${x},700" --settle 2 --json > "${ARTIFACTS}/probe-click.json" 2>&1 || true
+            probe "${WS_URL}" --click "${x},700" --pause 5 --settle 2 --json \
+                > "${ARTIFACTS}/probe-click.json" 2>&1 || true
             window_exists "${CONTAINER}" xfce4-terminal && { TERMINAL_OPEN=1; break; }
         done
         [ "${TERMINAL_OPEN}" = "1" ] && ok "clicking the panel launcher opened a terminal" \
@@ -410,7 +412,7 @@ PY
 
     if [ "${TERMINAL_OPEN}" = "1" ]; then
         if probe "${WS_URL}" --type "touch ${PROOF}
-" --out2 "${ARTIFACTS}/desktop-2.png" --settle 4 --json > "${ARTIFACTS}/probe-3.json" 2>&1; then
+" --out2 "${ARTIFACTS}/desktop-2.png" --settle 5 --json > "${ARTIFACTS}/probe-3.json" 2>&1; then
             ok "keyboard input was delivered to the desktop"
         else
             fail "sending keystrokes failed: $(tail -3 "${ARTIFACTS}/probe-3.json" | tr '\n' ' ')"

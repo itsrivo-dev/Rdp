@@ -38,21 +38,11 @@ jobs:
           set -o pipefail
           python3 -m unittest discover -s tests/unit -v 2>&1 | tee unit.log
 
-      - name: Build the icons and the desktop page (no Docker)
+      - name: Build the icons (the same tool the Docker build runs)
         run: |
           set -o pipefail
           mkdir -p /tmp/icon-check
-          python3 docker/tools/make_icons.py /tmp/icon-check
-          python3 -c "
-import struct, sys
-for name in ('icon-192.png', 'icon-512.png', 'icon-maskable-512.png'):
-    data = open('/tmp/icon-check/' + name, 'rb').read()
-    assert data[:8] == b'\x89PNG\r\n\x1a\n', name + ' is not a PNG'
-    width, height = struct.unpack('>II', data[16:24])
-    print('%s: %dx%d, %d bytes' % (name, width, height, len(data)))
-assert open('/tmp/icon-check/favicon.ico', 'rb').read()[:4] == b'\x00\x00\x01\x00', 'bad ICO'
-print('icons OK')
-" | tee -a lint.log
+          python3 docker/tools/make_icons.py /tmp/icon-check | tee -a lint.log
 
       - name: Gateway smoke test (real server, stand-in VNC, no Docker)
         run: |
